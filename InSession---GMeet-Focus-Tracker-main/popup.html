@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InSession</title>
+  <link rel="stylesheet" href="style.css" />
+  
+</head>
+<body>
+
+  <div class="app-window">
+    <!-- Top Bar -->
+    <header>
+      <div class="brand-container">
+        <img src="logo.png" alt="" class="brand-icon" />
+        <div class="brand-copy">
+          <strong>InSession</strong>
+          <span>Student Activity Dashboard</span>
+        </div>
+      </div>
+      <a href="#logout" class="logout-btn">Logout</a>
+    </header>
+
+    <!-- Main Body Area -->
+    <main>
+      <!-- Stats Counters -->
+      <div class="stats">
+        <div class="stat"><b id="sAttendees">0</b>Attendees</div>
+        <div class="stat"><b id="sActive">0</b>Active</div>
+        <div class="stat"><b id="sAway">0</b>Away</div>
+     </div>
+
+      <!-- Controls & participant records -->
+      <section class="panel-container">
+        <div class="panel-heading">
+          <div>
+            <h1>Participants</h1>
+            <p>Monitor Attendance and Activity</p>
+          </div>
+          <span class="live-label"><span></span> Active</span>
+        </div>
+
+        <!-- Actions & Filter Tools -->
+        <div class="toolbar">
+          <div class="action-buttons">
+            <button type="button" class="btn btn-start">Start</button>
+            <button type="button" class="btn btn-pause">Pause</button>
+            <button type="button" class="btn btn-end">End</button>
+          </div>
+
+          <div class="filter-tools">
+            <div class="search-wrapper">
+              <!-- Magnifying Glass Icon -->
+              <img src="search-icon.png" alt="Search Icon" class="search-icon"/>
+              <input type="text" class="search-input" placeholder="Search participant" aria-label="Search participants" />
+            </div>
+
+            <!-- Filter Dropdown Container -->
+             <div class="dropdown-wrapper">
+                <button type="button" class="filter-btn" id="filter-btn" aria-label="Filter participants">
+                <!-- Filter / Funnel Icon -->
+                <img src="bars-filter.png" alt="Filter Icon" class="filter-icon"/>
+                <span id="currentFilterText">Show All</span>
+                <span class="dropdown-arrow">˅</span>
+              </button>
+              <ul class="dropdown-menu" id="filterDropdown">
+                <li data-value="all" class="active">Show All</li>
+                <li data-value="active">Active</li>
+                <li data-value="away">Inactive</li>
+              </ul>
+             </div>
+            
+          </div>
+        </div>
+
+        <!-- Participants Table -->
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th class="col-student">Student</th>
+                <th class="col-status">Status</th>
+              </tr>
+            </thead>
+            <tbody id="studentTableBody">
+              <tr>
+                <td colspan="2" style="text-align: center; padding: 24px; color: #888;">
+                  Connecting to live database...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
