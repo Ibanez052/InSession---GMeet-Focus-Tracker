@@ -3,6 +3,10 @@
   "name": "InSession Collector",
   "version": "1.0",
   "description": "Scrapes Google Meet participants and engagement into Firestore.",
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": "assets/logo.png"
+  },
   "host_permissions": [
     "https://meet.google.com/*",
     "https://firestore.googleapis.com/*"
@@ -10,7 +14,7 @@
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
-      "js": ["content.js"],
+      "js": ["src/content/content.js"],
       "run_at": "document_idle"
     }
   ]
