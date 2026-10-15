@@ -26,6 +26,14 @@ function isInMeeting() {
   return Boolean(meetCode && document.querySelector('button[aria-label*="Leave call" i], button[aria-label*="Leave meeting" i]'));
 }
 
+function hasMeetHostControls() {
+  // Google Meet exposes its host-only controls as a toolbar button. This is a
+  // UI signal, not a security boundary; fail closed when the label is absent.
+  return Boolean(document.querySelector(
+    'button[aria-label*="host controls" i], [role="button"][aria-label*="host controls" i]'
+  ));
+}
+
 function isCleanName(value) {
   const name = value?.trim();
   return Boolean(name && name.length >= 2 && name.length <= 80 && !NAME_BLACKLIST.has(name.toLowerCase()));
@@ -95,7 +103,8 @@ function scheduleStatusReport(forceHeartbeat = false) {
 }
 
 async function reportStatus(forceHeartbeat = false, statusOverride = null) {
-  if (!currentUid || !meetingActive || !session || session.status !== "running" || session.hostUid === currentUid) return;
+  if (!currentUid || !meetingActive || !session || session.status !== "running"
+    || session.hostUid === currentUid || session.hostUid === storedHostUid) return;
   const name = findMyName();
   if (name) currentName = name;
   const status = statusOverride ?? getCurrentStatus();
@@ -152,6 +161,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes.hostUid) return;
   storedHostUid = changes.hostUid.newValue ?? null;
   if (session?.hostUid === storedHostUid) lastStatus = null;
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "in-session:get-host-ui-role") return;
+  sendResponse({
+    meetCode: readMeetCode(),
+    inMeeting: isInMeeting(),
+    hostControlsVisible: isInMeeting() && hasMeetHostControls()
+  });
 });
 
 meetCode = readMeetCode();

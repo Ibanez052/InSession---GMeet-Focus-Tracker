@@ -75,6 +75,50 @@
       color: #16776c;
     }
 
+    .dashboard-content {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .participant-view {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      min-height: 0;
+      padding: 32px 24px;
+      text-align: center;
+    }
+
+    .participant-mark {
+      display: grid;
+      width: 44px;
+      height: 44px;
+      place-items: center;
+      border-radius: 50%;
+      background: #e8f4ef;
+      color: #16776c;
+      font-size: 21px;
+      font-weight: 700;
+    }
+
+    .participant-view h1 {
+      color: #172c32;
+      font-size: 18px;
+      font-weight: 650;
+    }
+
+    .participant-view p {
+      max-width: 360px;
+      color: #647078;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
     .sr-only {
       position: absolute;
       width: 1px;

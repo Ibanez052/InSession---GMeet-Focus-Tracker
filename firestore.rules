@@ -2,17 +2,20 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
+    function googleSignedIn() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
     function sessionExists(code) {
       return exists(/databases/$(database)/documents/sessions/$(code));
     }
     function isHost(code) {
-      return signedIn() && sessionExists(code)
+      return googleSignedIn() && sessionExists(code)
         && get(/databases/$(database)/documents/sessions/$(code)).data.hostUid == request.auth.uid;
     }
 
     match /sessions/{code} {
       allow read: if signedIn();
-      allow create: if signedIn()
+      allow create: if googleSignedIn()
         && request.resource.data.hostUid == request.auth.uid
         && request.resource.data.status in ['running', 'paused', 'ended'];
       allow update: if isHost(code)
