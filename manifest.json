@@ -1,8 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "InSession Collector",
+  "name": "InSession – GMeet Focus Tracker",
   "version": "1.0",
-  "description": "Scrapes Google Meet participants and engagement into Firestore.",
+  "description": "Shows Google Meet participant focus status during a session.",
+  "permissions": ["identity", "activeTab", "storage"],
+  "oauth2": {
+    "client_id": "433861086598-lssi7ehea8ij8339c7d4197ksmhv5j92.apps.googleusercontent.com",
+    "scopes": ["openid", "email", "profile"]
+  },
   "action": {
     "default_popup": "src/popup/popup.html",
     "default_icon": "assets/logo.png"

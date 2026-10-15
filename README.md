@@ -4,6 +4,27 @@ A Chrome (Manifest V3) extension for Google Meet that shows whether participants
 
 > **Status: prototype.** This README documents every known issue found in a code review of `content.js`, `popup.js`, `popup.html`, `style.css` and `manifest.json`, together with the planned fix for each. Tick the boxes as items are completed.
 
+## Build and Firebase setup
+
+The Firebase SDK is bundled locally. Install dependencies and build the unpacked extension with Node.js and npm:
+
+```sh
+npm ci
+npm run build
+```
+
+Load the generated `dist/` directory in `chrome://extensions` using **Load unpacked**.
+
+Before signing in or tracking participants:
+
+1. In Firebase Authentication, enable **Google** and **Anonymous** sign-in providers.
+2. In the Google Cloud project associated with Firebase, create an OAuth client of type **Chrome Extension**. Enter the extension ID shown in `chrome://extensions` as its Item ID. Google will generate a separate client ID ending in `.apps.googleusercontent.com`.
+3. Set the generated Chrome Extension OAuth client ID in `manifest.json`, then rebuild the extension.
+4. In Firebase Authentication's Authorized domains settings, add `chrome-extension://<your-extension-id>`.
+5. Deploy the included Firestore rules with the Firebase CLI: `firebase deploy --only firestore:rules --project insession-d7332`.
+
+The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The first signed-in account to start a meeting session becomes that session's host.
+
 ## Current files
 
 | File | Role |
@@ -35,7 +56,7 @@ All fixes below fit one redesign:
 
 ## A. Broken now
 
-- [ ] **1. Popup cannot load Firebase.** `popup.js` imports from `https://www.gstatic.com/firebasejs/...`; MV3 blocks remote scripts, so the popup stays on its placeholder numbers.
+- [x] **1. Popup cannot load Firebase.** `popup.js` imports from `https://www.gstatic.com/firebasejs/...`; MV3 blocks remote scripts, so the popup stays on its placeholder numbers.
   **Fix:** install `firebase` via npm and bundle `popup.js` and `content.js` with Vite or esbuild. This also removes the need for the REST calls in `content.js`.
 
 - [ ] **2. Window `blur` tracking is overridden by the heartbeat.** `blur` sets "away", but the 2 s heartbeat calls `evaluateStatus()`, which only checks `document.hidden` and flips back to "active". A student with Meet visible on one monitor and YouTube on another is never marked away.
@@ -52,7 +73,7 @@ All fixes below fit one redesign:
 
 ## B. Wrong or inconsistent data
 
-- [ ] **6. One global session for everyone.** There is a single `session/current` doc and one `students` collection with no meeting code, so two classes using the extension at once get mixed together.
+- [x] **6. One global session for everyone.** There is a single `session/current` doc and one `students` collection with no meeting code, so two classes using the extension at once get mixed together.
   **Fix:** key sessions by the meeting code from `location.pathname`. Reset local state when the code changes (Meet is a single-page app).
 
 - [ ] **7. Name blacklist rejects real names.** `UI_BLACKLIST` uses `includes()`: "Pineda" is rejected for "pin", "Claudio" for "audio", "Chatterjee" for "chat". Those students are never tracked.
@@ -76,7 +97,7 @@ All fixes below fit one redesign:
 - [ ] **13. Anything not "active" renders as Away.**
   **Fix:** define explicit statuses: `active`, `away`, `left`, `untracked`.
 
-- [ ] **14. Client-side timestamps.**
+- [x] **14. Client-side timestamps.**
   **Fix:** use `serverTimestamp()`.
 
 ## C. Fragile Meet scraping
@@ -89,10 +110,10 @@ All fixes below fit one redesign:
 
 ## D. Security and privacy
 
-- [ ] **17. No authentication.** Neither `content.js` nor `popup.js` signs in.
+- [x] **17. No authentication.** Neither `content.js` nor `popup.js` signs in.
   **Fix:** `chrome.identity` Google sign-in for the host, anonymous or Google sign-in for students. Add the `identity` permission to the manifest.
 
-- [ ] **18. Open Firestore rules.** Unauthenticated REST calls work, so the rules must be open (or in 30-day "test mode", which expires and then breaks everything). The project ID and API key are in a public repo, so anyone can read, write or wipe data.
+- [x] **18. Open Firestore rules.** Rules are defined in `firestore.rules` and have been deployed to the `insession-d7332` Firebase project. Unauthenticated clients are denied; keep the project ID and API key treated as public configuration.
   **Fix:** replace the rules and test them in the emulator. Sketch:
   ```
   match /sessions/{code} {
@@ -108,10 +129,10 @@ All fixes below fit one redesign:
   ```
   The `status == "running"` check also stops students being recreated after End. Rule `get()` calls count as reads, so keep heartbeats at 30 s or slower.
 
-- [ ] **19. Everyone gets the host buttons.** Any student with the extension can Start, Pause or End a session.
+- [x] **19. Everyone gets the host buttons.** Any student with the extension can Start, Pause or End a session.
   **Fix:** show Start/Pause/End only to the session host. Students get a read-only "tracking is on" view.
 
-- [ ] **20. Markup injection via `innerHTML`.** Student names are user-controlled and inserted unescaped. MV3 blocks inline handlers, which limits the damage, but it should still be fixed.
+- [x] **20. Markup injection via `innerHTML`.** Student names are user-controlled and inserted unescaped. MV3 blocks inline handlers, which limits the damage, but it should still be fixed.
   **Fix:** build rows with `createElement` and `textContent`.
 
 - [ ] **21. Firebase API key is public in the repo.**
@@ -131,7 +152,7 @@ All fixes below fit one redesign:
 - [ ] **25. Ending a session deletes everything.** There is no history, no focus-time data and no export.
   **Fix:** archive instead of delete. Store accumulated away time per student and add a CSV export.
 
-- [ ] **26. Manual status override fights live reports.**
+- [x] **26. Manual status override fights live reports.**
   **Fix:** store it as a separate `override` field with a visible marker, add an undo, or remove the feature.
 
 - [ ] **27. Logout does nothing** (`href="#logout"`).
@@ -164,4 +185,4 @@ All fixes below fit one redesign:
 
 ## Progress
 
-34 issues total: 0 done.
+34 issues total: 8 implementation items done. Firestore rules are deployed to `insession-d7332`.

@@ -1,260 +1,113 @@
-// --- CONFIGURATION ---
-const FIREBASE_PROJECT_ID = "insession-extension";
-const FIRESTORE_API_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/students`;
-const SESSION_API_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/session/current`;
+import { onAuthStateChanged, signInAnonymously } from "firebase/auth/web-extension";
+import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { auth, db } from "../shared/firebase.js";
 
-let cachedMyName = null;
-let isSessionRunning = false;
-let lastReportedStatus = null;
+const NAME_BLACKLIST = new Set(["people", "chat", "activities", "host controls", "mute", "leave call", "more options"]);
+let meetCode = null;
+let session = null;
+let currentUid = null;
+let currentName = null;
+let storedHostUid = null;
+let stopSessionListener = null;
+let lastStatus = null;
+let lastHeartbeatAt = 0;
 
-const UI_BLACKLIST = [
-  "join now",
-  "ask to join",
-  "backgrounds and effects",
-  "meeting details",
-  "people",
-  "chat",
-  "activities",
-  "host controls",
-  "pin",
-  "mute",
-  "mic",
-  "mic_off",
-  "videocam",
-  "videocam_off",
-  "more options",
-  "more_vert",
-  "turn off",
-  "turn on",
-  "raise hand",
-  "hand raises",
-  "frame_person",
-  "leave call",
-  "others might still see your full video",
-  "admit",
-  "deny",
-  "devices",
-  "device",
-  "audio",
-  "video",
-  "paired",
-  "in call",
-  "contributors",
-  "waiting to join",
-  "entry request"
-];
-
-function isCleanName(text) {
-  if (!text || text.length < 2 || text.length > 50) return false;
-  if (/^\d{1,2}:\d{2}/.test(text)) return false;
-  const lower = text.toLowerCase().trim();
-  return !UI_BLACKLIST.some(bad => lower === bad || lower.includes(bad));
+function readMeetCode() {
+  if (location.hostname !== "meet.google.com") return null;
+  return location.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/i)?.[1] ?? null;
 }
 
 function isInMeeting() {
-  return document.querySelector('button[aria-label*="leave" i], button[aria-label*="call" i], [data-call-ended]') !== null;
+  return Boolean(meetCode && document.querySelector('button[aria-label*="Leave call" i], button[aria-label*="Leave meeting" i]'));
 }
 
-// 1. Multi-Account Identity Resolution
-function getMyName() {
-  if (cachedMyName) return cachedMyName;
-  if (!isInMeeting()) return null;
-
-  // Method A: Check top right Google Account profile icon in Meet
-  const accountBtn = document.querySelector('a[aria-label*="Google Account:" i], button[aria-label*="Google Account:" i]');
-  if (accountBtn) {
-    const label = accountBtn.getAttribute('aria-label') || '';
-    const match = label.match(/Google Account:\s*([^(]+)/i);
-    if (match && match[1]) {
-      const clean = match[1].trim();
-      if (isCleanName(clean)) {
-        cachedMyName = clean;
-        return cachedMyName;
-      }
-    }
-  }
-
-  // Method B: Check People Panel list items for "(You)"
-  const listItems = Array.from(document.querySelectorAll('div[role="listitem"]'));
-  for (const item of listItems) {
-    const raw = item.textContent || "";
-    if (raw.includes("(You)")) {
-      const spans = Array.from(item.querySelectorAll("span")).map(s => s.textContent.trim());
-      for (const s of spans) {
-        if (s.includes("(You)")) {
-          const cleaned = s.replace(/\s*\(You\)/gi, "").trim();
-          if (isCleanName(cleaned)) {
-            cachedMyName = cleaned;
-            return cachedMyName;
-          }
-        }
-      }
-    }
-  }
-
-  // Method C: Google Meet data-self-name attribute
-  const selfAttr = document.querySelector("[data-self-name]");
-  if (selfAttr) {
-    const val = selfAttr.getAttribute("data-self-name")?.trim();
-    if (val && isCleanName(val)) {
-      cachedMyName = val;
-      return cachedMyName;
-    }
-  }
-
-  // Method D: Leaf text node explicitly containing "(You)"
-  const youLeaf = Array.from(document.querySelectorAll("span, div")).find(el => {
-    if (el.children.length > 0) return false;
-    const txt = el.textContent.trim();
-    return txt.endsWith("(You)") && isCleanName(txt.replace(/\s*\(You\)/gi, "").trim());
-  });
-
-  if (youLeaf) {
-    const clean = youLeaf.textContent.replace(/\s*\(You\)/gi, "").trim();
-    cachedMyName = clean;
-    return cachedMyName;
-  }
-
-  return null;
+function isCleanName(value) {
+  const name = value?.trim();
+  return Boolean(name && name.length >= 2 && name.length <= 80 && !NAME_BLACKLIST.has(name.toLowerCase()));
 }
 
-// 2. Host Scraper: Discovers new participants
-async function scrapeAllVisibleParticipants() {
-  if (!isSessionRunning || !isInMeeting()) return;
-
-  const myName = getMyName();
-  const myClean = myName ? myName.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
-
-  const namesFound = new Set();
-  const buttons = document.querySelectorAll('button[aria-label*="options for" i]');
-  buttons.forEach(btn => {
-    const label = btn.getAttribute("aria-label") || "";
-    const match = label.match(/options for\s+(.+)$/i);
-    if (match && match[1]) {
-      const cleaned = match[1].replace(/\s*\(You\)/gi, "").trim();
-      if (isCleanName(cleaned)) {
-        namesFound.add(cleaned);
-      }
-    }
-  });
-
-  for (const name of namesFound) {
-    const nameClean = name.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (myClean && nameClean === myClean) continue;
-
-    const safeDocId = name.toLowerCase().replace(/[^a-z0-9]/g, "_");
-    const checkUrl = `${FIRESTORE_API_URL}/${safeDocId}`;
-
-    try {
-      const res = await fetch(checkUrl);
-      if (res.status === 404) {
-        const payload = {
-          fields: {
-            name: { stringValue: name },
-            status: { stringValue: "active" },
-            lastSeen: { stringValue: new Date().toISOString() }
-          }
-        };
-        await fetch(`${FIRESTORE_API_URL}?documentId=${safeDocId}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        console.log(`%c[InSession] Auto-discovered participant: ${name}`, "color: #4b88ff; font-weight: bold;");
-      }
-    } catch (e) {}
-  }
+function findMyName() {
+  const account = document.querySelector('[aria-label*="Google Account:" i]')?.getAttribute("aria-label") ?? "";
+  const accountMatch = account.match(/Google Account:\s*([^,(]+)/i);
+  if (isCleanName(accountMatch?.[1])) return accountMatch[1].trim();
+  const self = document.querySelector("[data-self-name]")?.getAttribute("data-self-name");
+  if (isCleanName(self)) return self.trim();
+  const you = Array.from(document.querySelectorAll('[role="listitem"]')).find((el) => /\(You\)/i.test(el.textContent ?? ""));
+  const text = you?.textContent?.replace(/\s*\(You\)/gi, "").trim();
+  return isCleanName(text) ? text : auth.currentUser?.displayName || null;
 }
 
-// 3. Poll Session Status
-async function checkSessionStatus() {
+function listenForSession() {
+  stopSessionListener?.();
+  stopSessionListener = null;
+  session = null;
+  lastStatus = null;
+  if (!meetCode || !currentUid) return;
+  stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
+    session = snapshot.exists() ? snapshot.data() : null;
+    if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
+      lastStatus = null;
+      return;
+    }
+    reportStatus();
+  }, (error) => console.error("[InSession] Session listener failed:", error));
+}
+
+async function reportStatus(forceHeartbeat = false) {
+  if (!currentUid || !session || session.status !== "running" || session.hostUid === currentUid || !isInMeeting()) return;
+  const name = findMyName();
+  if (name) currentName = name;
+  const status = document.hidden || !document.hasFocus() ? "away" : "active";
+  const now = Date.now();
+  if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return;
   try {
-    const res = await fetch(SESSION_API_URL);
-    if (res.ok) {
-      const data = await res.json();
-      const status = data.fields?.status?.stringValue;
-      isSessionRunning = status === "running";
-
-      if (status === "ended") {
-        lastReportedStatus = null;
-      }
-    }
-  } catch (err) {}
-}
-setInterval(checkSessionStatus, 3000);
-checkSessionStatus();
-
-// 4. Report Status to Firestore
-async function reportMyStatus(status) {
-  if (!isInMeeting() || !isSessionRunning) return;
-  if (lastReportedStatus === status) return;
-
-  const myName = getMyName();
-  if (!myName) return;
-
-  const safeDocId = myName.toLowerCase().replace(/[^a-z0-9]/g, "_");
-  const url = `${FIRESTORE_API_URL}/${safeDocId}?updateMask.fieldPaths=name&updateMask.fieldPaths=status&updateMask.fieldPaths=lastSeen`;
-
-  const payload = {
-    fields: {
-      name: { stringValue: myName },
-      status: { stringValue: status },
-      lastSeen: { stringValue: new Date().toISOString() }
-    }
-  };
-
-  try {
-    const res = await fetch(url, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      keepalive: true
-    });
-
-    if (res.ok) {
-      lastReportedStatus = status;
-      console.log(`%c[InSession] Status synced: ${myName} -> ${status.toUpperCase()}`, "color: #00e676; font-weight: bold;");
-    }
-  } catch (err) {
-    console.error("[InSession] Status sync error:", err);
+    await setDoc(doc(db, "sessions", meetCode, "students", currentUid), {
+      uid: currentUid,
+      name: currentName || "Meet participant",
+      status,
+      lastSeen: serverTimestamp()
+    }, { merge: true });
+    lastStatus = status;
+    lastHeartbeatAt = now;
+  } catch (error) {
+    console.error("[InSession] Status sync failed:", error);
   }
 }
 
-// 5. Clean, Direct State Evaluator
-function evaluateStatus() {
-  if (document.hidden) {
-    reportMyStatus("away");
-  } else {
-    reportMyStatus("active");
-  }
+function handleRouteChange() {
+  const nextCode = readMeetCode();
+  if (nextCode === meetCode) return;
+  meetCode = nextCode;
+  currentName = null;
+  listenForSession();
 }
 
-// Listen to native tab visibility change
-document.addEventListener("visibilitychange", evaluateStatus);
-
-// Window focus/blur tracking
-window.addEventListener("focus", () => {
-  reportMyStatus("active");
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    try { await signInAnonymously(auth); }
+    catch (error) { console.error("[InSession] Anonymous sign-in failed:", error); }
+    return;
+  }
+  currentUid = user.uid;
+  if (user.displayName) currentName = user.displayName;
+  listenForSession();
 });
 
-window.addEventListener("blur", () => {
-  // If the user tabs away or clicks outside the window
-  reportMyStatus("away");
+chrome.storage.local.get("hostUid", ({ hostUid }) => {
+  storedHostUid = hostUid ?? null;
+  if (session?.status === "running" && session.hostUid === storedHostUid) lastStatus = null;
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.hostUid) return;
+  storedHostUid = changes.hostUid.newValue ?? null;
+  if (session?.hostUid === storedHostUid) lastStatus = null;
 });
 
-// Regular heartbeat that checks visibility every 2 seconds
-setInterval(() => {
-  if (isSessionRunning && isInMeeting()) {
-    evaluateStatus();
-    scrapeAllVisibleParticipants();
-  }
-}, 2000);
-
-// Kickstart initial check
-setTimeout(() => {
-  if (isInMeeting()) {
-    evaluateStatus();
-  }
-}, 1500);
-
-console.log("[InSession] Multi-account tracker ready.");
+meetCode = readMeetCode();
+const routeObserver = new MutationObserver(handleRouteChange);
+routeObserver.observe(document.documentElement, { childList: true, subtree: true });
+document.addEventListener("visibilitychange", () => reportStatus(true));
+window.addEventListener("focus", () => reportStatus(true));
+window.addEventListener("blur", () => reportStatus(true));
+setInterval(() => reportStatus(true), 30000);
+console.info("[InSession] Authenticated tracker ready.");

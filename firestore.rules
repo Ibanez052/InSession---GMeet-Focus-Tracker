@@ -1,0 +1,37 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function sessionExists(code) {
+      return exists(/databases/$(database)/documents/sessions/$(code));
+    }
+    function isHost(code) {
+      return signedIn() && sessionExists(code)
+        && get(/databases/$(database)/documents/sessions/$(code)).data.hostUid == request.auth.uid;
+    }
+
+    match /sessions/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.status in ['running', 'paused', 'ended'];
+      allow update: if isHost(code)
+        && request.resource.data.hostUid == resource.data.hostUid;
+      allow delete: if isHost(code);
+
+      match /students/{uid} {
+        allow read: if isHost(code);
+        allow create, update: if signedIn() && request.auth.uid == uid
+          && sessionExists(code)
+          && get(/databases/$(database)/documents/sessions/$(code)).data.status == 'running'
+          && get(/databases/$(database)/documents/sessions/$(code)).data.hostUid != uid
+          && request.resource.data.keys().hasOnly(['uid', 'name', 'status', 'lastSeen'])
+          && request.resource.data.uid == uid
+          && request.resource.data.status in ['active', 'away', 'left'];
+        allow delete: if isHost(code) || (signedIn() && request.auth.uid == uid);
+      }
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}

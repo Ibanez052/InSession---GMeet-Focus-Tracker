@@ -15,7 +15,11 @@
       <div class="brand-container">
         <img src="../../assets/logo.png" alt="InSession Logo" style="height: 80px; width: auto;" />
       </div>
-      <a href="#logout" class="logout-btn">Logout</a>
+      <div class="auth-controls">
+        <span id="account-status" role="status">Sign in to manage a session</span>
+        <button type="button" id="sign-in" class="logout-btn">Sign in with Google</button>
+        <button type="button" id="sign-out" class="logout-btn" hidden>Sign out</button>
+      </div>
     </header>
 
     <!-- Main Body Area -->
@@ -40,11 +44,12 @@
       <section class="panel-container">
         <!-- Actions & Filter Tools -->
         <div class="toolbar">
-          <div class="action-buttons">
+          <div class="action-buttons" id="host-controls" hidden>
             <button type="button" class="btn btn-start">Start</button>
             <button type="button" class="btn btn-pause">Pause</button>
             <button type="button" class="btn btn-end">End</button>
           </div>
+          <p id="session-notice" role="status" hidden></p>
 
           <div class="filter-tools">
             <div class="search-wrapper">
