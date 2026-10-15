@@ -16,14 +16,21 @@
         <span class="brand-name">InSession</span>
       </div>
       <div class="auth-controls">
-        <span id="account-status" role="status">Sign in to manage a session</span>
-        <button type="button" id="sign-in" class="logout-btn">Sign in with Google</button>
+        <span id="account-status" role="status">Connecting…</span>
+        <button type="button" id="sign-in" class="logout-btn" aria-label="Sign in with Google as the instructor">Sign in as instructor</button>
         <button type="button" id="sign-out" class="logout-btn" hidden>Sign out</button>
       </div>
     </header>
 
     <!-- Main Body Area -->
     <main>
+      <section id="participant-view" class="participant-view" aria-live="polite">
+        <span class="participant-mark" aria-hidden="true">✓</span>
+        <h1 id="participant-heading">Connecting to your meeting…</h1>
+        <p id="participant-message">Your attendance status is reported automatically while the instructor's session is running.</p>
+      </section>
+
+      <div id="host-dashboard" class="dashboard-content" hidden>
       <!-- Stats Counters -->
       <section class="stats-grid">
         <div class="stat-card">
@@ -92,6 +99,7 @@
           </table>
         </div>
       </section>
+      </div>
     </main>
   </div>
   <script type="module" src="popup.js"></script>

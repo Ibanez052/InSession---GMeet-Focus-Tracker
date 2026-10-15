@@ -1,4 +1,4 @@
-import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut } from "firebase/auth/web-extension";
+import { GoogleAuthProvider, linkWithCredential, onAuthStateChanged, signInAnonymously, signInWithCredential, signOut } from "firebase/auth/web-extension";
 import { collection, doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
@@ -13,6 +13,10 @@ const signInButton = byId("sign-in");
 const signOutButton = byId("sign-out");
 const accountStatus = byId("account-status");
 const sessionNotice = byId("session-notice");
+const hostDashboard = byId("host-dashboard");
+const participantView = byId("participant-view");
+const participantHeading = byId("participant-heading");
+const participantMessage = byId("participant-message");
 const btnStart = document.querySelector(".btn-start");
 const btnPause = document.querySelector(".btn-pause");
 const btnEnd = document.querySelector(".btn-end");
@@ -20,6 +24,7 @@ const statusFilter = byId("status-filter");
 
 let user = null;
 let meetCode = null;
+let hostControlsVisible = false;
 let sessionData = null;
 let studentsData = [];
 let currentFilter = "all";
@@ -28,6 +33,7 @@ let stopSessionListener = null;
 let stopStudentsListener = null;
 let pendingAction = null;
 let pendingActionLabel = "";
+let anonymousAuthPromise = null;
 const STALE_AFTER_MS = 60_000;
 
 function getGoogleAccessToken() {
@@ -67,6 +73,32 @@ function setNotice(message, isError = false) {
   sessionNotice.classList.toggle("error", isError);
 }
 
+function setParticipantNotice(heading, message) {
+  participantHeading.textContent = heading;
+  participantMessage.textContent = message;
+}
+
+function showSessionError(message) {
+  if (isGoogleAccount(user)) setNotice(message, true);
+  else setParticipantNotice("Could not connect to the session", message);
+}
+
+function isGoogleAccount(account) {
+  return Boolean(account?.providerData?.some((provider) => provider.providerId === "google.com"));
+}
+
+function ensureParticipantAuth() {
+  if (!meetCode || user) return Promise.resolve();
+  if (anonymousAuthPromise) return anonymousAuthPromise;
+  anonymousAuthPromise = signInAnonymously(auth)
+    .catch((error) => {
+      console.error("[InSession] Anonymous participant sign-in failed:", error);
+      setParticipantNotice("Participant tracking unavailable", "Could not connect to attendance tracking. Ask the instructor to check the extension setup.");
+    })
+    .finally(() => { anonymousAuthPromise = null; });
+  return anonymousAuthPromise;
+}
+
 function getDisplayStatus(student, now = Date.now()) {
   if (student.status === "left" || sessionData?.status !== "running") return student.status;
   const lastSeen = student.lastSeen;
@@ -81,29 +113,60 @@ function getDisplayStatus(student, now = Date.now()) {
 }
 
 function updateControls() {
-  const isHost = Boolean(user && meetCode && (!sessionData || sessionData.hostUid === user.uid));
+  const isGoogleUser = isGoogleAccount(user);
+  const isHost = Boolean(isGoogleUser && meetCode && hostControlsVisible
+    && (!sessionData || sessionData.hostUid === user.uid));
   hostControls.hidden = !isHost;
+  hostDashboard.hidden = !isHost;
+  participantView.hidden = isHost;
+  signInButton.hidden = !hostControlsVisible || isGoogleUser
+    || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid);
+  signInButton.textContent = user?.isAnonymous ? "Sign in as instructor" : "Instructor sign-in";
+  signOutButton.hidden = !isGoogleUser;
+
+  if (isHost) {
+    accountStatus.textContent = `Signed in as ${user.displayName || user.email || "Google account"}`;
+    if (!meetCode) {
+      setNotice("Open this side panel from an active Google Meet tab.");
+      return;
+    }
+    setNotice(sessionData?.status === "running" ? `Tracking is on for ${meetCode}.` : "You can start a session for this meeting.");
+
+    const status = sessionData?.status ?? "idle";
+    btnStart.disabled = status === "running" || Boolean(pendingAction);
+    btnStart.textContent = pendingAction === btnStart ? pendingActionLabel : status === "paused" ? "Resume" : "Start";
+    btnPause.disabled = status !== "running" || Boolean(pendingAction);
+    btnPause.textContent = pendingAction === btnPause ? pendingActionLabel : "Pause";
+    btnEnd.disabled = !["running", "paused"].includes(status) || Boolean(pendingAction);
+    btnEnd.textContent = pendingAction === btnEnd ? pendingActionLabel : "End";
+    return;
+  }
+
+  accountStatus.textContent = isGoogleUser ? "Participant mode" : user ? "Participant mode" : "Not signed in";
   if (!user) {
-    setNotice("Sign in with your instructor account to manage a session.");
+    setParticipantNotice(hostControlsVisible ? "Instructor sign-in" : "Participant mode",
+      hostControlsVisible
+        ? "Meet host controls are available in this call. Sign in with Google to manage the session."
+        : "Your attendance is tracked automatically when the instructor starts a session.");
     return;
   }
   if (!meetCode) {
-    setNotice("Open this popup from an active Google Meet tab.");
+    setParticipantNotice("Ready for a meeting", "Your attendance status is reported automatically while an instructor's session is running.");
     return;
   }
   if (sessionData?.hostUid && sessionData.hostUid !== user.uid) {
-    setNotice("This session is managed by its host. Tracking is read-only here.");
+    setParticipantNotice(sessionData.status === "running" ? "Attendance is being tracked" : "Participant mode", sessionData.status === "running"
+      ? `Your status is shared with the host for meeting ${meetCode}.`
+      : "Your status will be shared when the host starts tracking.");
     return;
   }
-  setNotice(sessionData?.status === "running" ? `Tracking is on for ${meetCode}.` : "You can start a session for this meeting.");
-
-  const status = sessionData?.status ?? "idle";
-  btnStart.disabled = status === "running" || Boolean(pendingAction);
-  btnStart.textContent = pendingAction === btnStart ? pendingActionLabel : status === "paused" ? "Resume" : "Start";
-  btnPause.disabled = status !== "running" || Boolean(pendingAction);
-  btnPause.textContent = pendingAction === btnPause ? pendingActionLabel : "Pause";
-  btnEnd.disabled = !["running", "paused"].includes(status) || Boolean(pendingAction);
-  btnEnd.textContent = pendingAction === btnEnd ? pendingActionLabel : "End";
+  if (!hostControlsVisible) {
+    setParticipantNotice("Participant mode", "Meet host controls were not detected. Your attendance is tracked when the instructor starts a session.");
+    return;
+  }
+  setParticipantNotice(sessionData?.status === "paused" ? "Tracking is paused" : "Waiting for the instructor", sessionData?.status === "paused"
+    ? "Your status will be shared again when the host resumes tracking."
+    : "Your attendance status will be shared automatically when the host starts tracking.");
 }
 
 async function runSessionAction(button, pendingLabel, action, errorLabel) {
@@ -183,8 +246,13 @@ function stopListeners() {
 
 function listenToMeeting() {
   stopListeners();
-  if (!user || !meetCode) {
+  if (!meetCode) {
     updateControls();
+    return;
+  }
+  if (!user) {
+    updateControls();
+    ensureParticipantAuth();
     return;
   }
   const sessionRef = doc(db, "sessions", meetCode);
@@ -195,7 +263,7 @@ function listenToMeeting() {
     stopStudentsListener?.();
     stopStudentsListener = null;
     studentsData = [];
-    if (sessionData?.hostUid === user.uid) {
+    if (isGoogleAccount(user) && sessionData?.hostUid === user.uid) {
       stopStudentsListener = onSnapshot(collection(sessionRef, "students"), (students) => {
         studentsData = students.docs.map((student) => ({ id: student.id, ...student.data() }));
         studentsData.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
@@ -203,7 +271,7 @@ function listenToMeeting() {
       }, (error) => setNotice(`Could not read attendees: ${error.message}`, true));
     }
     renderUI();
-  }, (error) => setNotice(`Could not read meeting session: ${error.message}`, true));
+  }, (error) => showSessionError(`Could not read meeting session: ${error.message}`));
 }
 
 signInButton.addEventListener("click", async () => {
@@ -212,12 +280,24 @@ signInButton.addEventListener("click", async () => {
   signInButton.textContent = "Signing in…";
   setNotice("Opening Google sign-in…");
   try {
+    await ensureParticipantAuth();
     const token = await getGoogleAccessToken();
     const credential = GoogleAuthProvider.credential(null, token);
-    await signInWithCredential(auth, credential);
+    if (auth.currentUser?.isAnonymous) {
+      try {
+        await linkWithCredential(auth.currentUser, credential);
+      } catch (error) {
+        if (error.code !== "auth/credential-already-in-use") throw error;
+        await signInWithCredential(auth, credential);
+      }
+    } else {
+      await signInWithCredential(auth, credential);
+    }
   } catch (error) {
     console.error("[InSession] Google sign-in failed:", error);
-    setNotice(`Sign in failed: ${error.message || "Check the extension OAuth setup and try again."}`, true);
+    const message = error.message || "Check the extension OAuth setup and try again.";
+    if (isGoogleAccount(user)) setNotice(`Sign in failed: ${message}`, true);
+    else setParticipantNotice("Instructor sign-in failed", message);
   } finally {
     signInButton.disabled = false;
     signInButton.textContent = originalLabel;
@@ -229,7 +309,6 @@ signOutButton.addEventListener("click", async () => {
   signOutButton.textContent = "Signing out…";
   try {
     await signOut(auth);
-    await chrome.storage.local.remove("hostUid");
   } catch (error) { setNotice(error.message, true); }
   finally {
     signOutButton.disabled = false;
@@ -238,7 +317,7 @@ signOutButton.addEventListener("click", async () => {
 });
 
 btnStart.addEventListener("click", async () => {
-  if (!user || !meetCode) return;
+  if (!isGoogleAccount(user) || !meetCode) return;
   await runSessionAction(btnStart, sessionData?.status === "paused" ? "Resuming…" : "Starting…", async () => {
     const sessionRef = doc(db, "sessions", meetCode);
     if (!sessionData) {
@@ -255,12 +334,12 @@ btnStart.addEventListener("click", async () => {
 });
 
 btnPause.addEventListener("click", async () => {
-  if (!sessionData || sessionData.hostUid !== user?.uid) return;
+  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid) return;
   await runSessionAction(btnPause, "Pausing…", () => updateDoc(doc(db, "sessions", meetCode), { status: "paused", pausedAt: serverTimestamp() }), "Could not pause tracking");
 });
 
 btnEnd.addEventListener("click", async () => {
-  if (!sessionData || sessionData.hostUid !== user?.uid || !confirm("End tracking for this meeting?")) return;
+  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid || !confirm("End tracking for this meeting?")) return;
   await runSessionAction(btnEnd, "Ending…", () => updateDoc(doc(db, "sessions", meetCode), { status: "ended", endedAt: serverTimestamp() }), "Could not end tracking");
 });
 
@@ -269,10 +348,33 @@ statusFilter.addEventListener("change", (event) => { currentFilter = event.targe
 
 function useActiveTab(tab) {
   const nextMeetCode = getMeetCode(tab?.url);
-  if (nextMeetCode === meetCode) return;
+  if (nextMeetCode === meetCode) {
+    refreshHostUiRole(tab?.id);
+    return;
+  }
   meetCode = nextMeetCode;
+  hostControlsVisible = false;
   listenToMeeting();
   updateControls();
+  refreshHostUiRole(tab?.id);
+}
+
+function refreshHostUiRole(tabId) {
+  if (!tabId || !meetCode) {
+    hostControlsVisible = false;
+    updateControls();
+    return;
+  }
+  chrome.tabs.sendMessage(tabId, { type: "in-session:get-host-ui-role" }, (result) => {
+    // A missing content script or changed Meet UI must not grant host controls.
+    if (chrome.runtime.lastError) {
+      hostControlsVisible = false;
+      updateControls();
+      return;
+    }
+    hostControlsVisible = Boolean(result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode);
+    updateControls();
+  });
 }
 
 function refreshActiveTab() {
@@ -284,14 +386,11 @@ chrome.tabs.onActivated.addListener(refreshActiveTab);
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tab.active && (changeInfo.url || changeInfo.status === "complete")) refreshActiveTab();
 });
+setInterval(refreshActiveTab, 2000);
 
 onAuthStateChanged(auth, (signedInUser) => {
   user = signedInUser;
-  if (user) chrome.storage.local.set({ hostUid: user.uid });
-  else chrome.storage.local.remove("hostUid");
-  accountStatus.textContent = user ? `Signed in as ${user.displayName || user.email || "Google account"}` : "Sign in to manage a session";
-  signInButton.hidden = Boolean(user);
-  signOutButton.hidden = !user;
+  if (isGoogleAccount(user)) chrome.storage.local.set({ hostUid: user.uid });
   listenToMeeting();
   updateControls();
 });

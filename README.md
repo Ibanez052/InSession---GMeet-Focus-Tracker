@@ -23,7 +23,7 @@ Before signing in or tracking participants:
 4. In Firebase Authentication's Authorized domains settings, add `chrome-extension://<your-extension-id>`.
 5. Deploy the included Firestore rules with the Firebase CLI: `firebase deploy --only firestore:rules --project insession-d7332`.
 
-The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The first signed-in account to start a meeting session becomes that session's host.
+The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization.
 
 ## Current files
 
@@ -37,7 +37,7 @@ The Firebase web API key in the source is public configuration. Firestore access
 
 All fixes below fit one redesign:
 
-- Firebase Auth for everyone (`chrome.identity` Google sign-in for the host, anonymous or Google sign-in for students).
+- Firebase Auth for everyone (`chrome.identity` Google sign-in after host-controls UI detection, anonymous or Google sign-in for participants).
 - Sessions keyed by Meet code: `sessions/{meetCode}/students/{uid}`.
 - Firebase SDK **bundled locally** (Vite or esbuild). No remote scripts.
 - `onSnapshot` listeners instead of polling.
@@ -116,10 +116,14 @@ All fixes below fit one redesign:
 - [x] **18. Open Firestore rules.** Rules are defined in `firestore.rules` and have been deployed to the `insession-d7332` Firebase project. Unauthenticated clients are denied; keep the project ID and API key treated as public configuration.
   **Fix:** replace the rules and test them in the emulator. Sketch:
   ```
+  function googleSignedIn() {
+    return request.auth != null
+      && request.auth.token.firebase.sign_in_provider == "google.com";
+  }
   match /sessions/{code} {
     allow read: if request.auth != null;
-    allow create: if request.auth != null && request.resource.data.hostUid == request.auth.uid;
-    allow update, delete: if resource.data.hostUid == request.auth.uid;
+    allow create: if googleSignedIn() && request.resource.data.hostUid == request.auth.uid;
+    allow update, delete: if googleSignedIn() && resource.data.hostUid == request.auth.uid;
     match /students/{uid} {
       allow create, update: if request.auth.uid == uid
         && get(/databases/$(database)/documents/sessions/$(code)).data.status == "running";
@@ -129,8 +133,8 @@ All fixes below fit one redesign:
   ```
   The `status == "running"` check also stops students being recreated after End. Rule `get()` calls count as reads, so keep heartbeats at 30 s or slower.
 
-- [x] **19. Everyone gets the host buttons.** Any student with the extension can Start, Pause or End a session.
-  **Fix:** show Start/Pause/End only to the session host. Students get a read-only "tracking is on" view.
+- [x] **19. Host and participant UI roles.** The side panel only offers instructor sign-in and host controls when the Meet page exposes its host-controls button. Other users get the participant status view. This depends on Meet's UI markup and is not a security boundary: Firestore rules cannot verify the role signal, and a determined signed-in user could bypass the extension UI.
+  **Deployment:** redeploy `firestore.rules` after merging rule changes. The current rules require Google sign-in and preserve session ownership, but do not independently verify the actual Meet host.
 
 - [x] **20. Markup injection via `innerHTML`.** Student names are user-controlled and inserted unescaped. MV3 blocks inline handlers, which limits the damage, but it should still be fixed.
   **Fix:** build rows with `createElement` and `textContent`.
