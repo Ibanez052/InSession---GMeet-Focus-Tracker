@@ -11,6 +11,8 @@ let currentUid = null;
 let currentName = null;
 let storedHostUid = null;
 let stopSessionListener = null;
+let meetingActive = false;
+let meetingContextTimer = null;
 let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
@@ -44,8 +46,14 @@ function listenForSession() {
   stopSessionListener?.();
   stopSessionListener = null;
   session = null;
+  currentRunId = null;
   lastStatus = null;
-  if (!meetCode || !currentUid) return;
+  lastHeartbeatAt = 0;
+  if (awayTimer !== null) {
+    clearTimeout(awayTimer);
+    awayTimer = null;
+  }
+  if (!meetCode || !currentUid || !meetingActive) return;
   stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
     session = snapshot.exists() ? snapshot.data() : null;
     const nextRunId = session?.runId ?? null;
@@ -67,6 +75,7 @@ function getCurrentStatus() {
 }
 
 function scheduleStatusReport(forceHeartbeat = false) {
+  if (!meetingActive) return;
   const status = getCurrentStatus();
   if (status === "away" && lastStatus !== "away") {
     if (awayTimer === null) {
@@ -86,7 +95,7 @@ function scheduleStatusReport(forceHeartbeat = false) {
 }
 
 async function reportStatus(forceHeartbeat = false, statusOverride = null) {
-  if (!currentUid || !session || session.status !== "running" || session.hostUid === currentUid || !isInMeeting()) return;
+  if (!currentUid || !meetingActive || !session || session.status !== "running" || session.hostUid === currentUid) return;
   const name = findMyName();
   if (name) currentName = name;
   const status = statusOverride ?? getCurrentStatus();
@@ -106,12 +115,22 @@ async function reportStatus(forceHeartbeat = false, statusOverride = null) {
   }
 }
 
-function handleRouteChange() {
+function syncMeetingContext() {
   const nextCode = readMeetCode();
-  if (nextCode === meetCode) return;
+  const nextMeetingActive = Boolean(nextCode && isInMeeting());
+  if (nextCode === meetCode && nextMeetingActive === meetingActive) return;
+  if (nextCode !== meetCode) currentName = null;
   meetCode = nextCode;
-  currentName = null;
+  meetingActive = nextMeetingActive;
   listenForSession();
+}
+
+function scheduleMeetingContextCheck() {
+  if (meetingContextTimer !== null) return;
+  meetingContextTimer = setTimeout(() => {
+    meetingContextTimer = null;
+    syncMeetingContext();
+  }, 500);
 }
 
 onAuthStateChanged(auth, async (user) => {
@@ -136,7 +155,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 meetCode = readMeetCode();
-const routeObserver = new MutationObserver(handleRouteChange);
+meetingActive = Boolean(meetCode && isInMeeting());
+const routeObserver = new MutationObserver(scheduleMeetingContextCheck);
 routeObserver.observe(document.documentElement, { childList: true, subtree: true });
 document.addEventListener("visibilitychange", () => scheduleStatusReport(true));
 window.addEventListener("focus", () => scheduleStatusReport(true));
