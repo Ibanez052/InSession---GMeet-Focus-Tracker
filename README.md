@@ -1,6 +1,6 @@
 # InSession – GMeet Focus Tracker
 
-A Chrome (Manifest V3) extension for Google Meet that shows whether participants are in the Meet tab or somewhere else. Each participant's extension reports its own status to Firestore, and the host's popup shows a live attendance dashboard (Start / Pause / End, search, filter).
+A Chrome (Manifest V3) extension for Google Meet that shows whether participants are in the Meet tab or somewhere else. Each participant's extension reports its own status to Firestore, and the host's side panel shows a live attendance dashboard (Start / Pause / End, search, filter).
 
 > **Status: prototype.** This README documents every known issue found in a code review of `content.js`, `popup.js`, `popup.html`, `style.css` and `manifest.json`, together with the planned fix for each. Tick the boxes as items are completed.
 
@@ -29,8 +29,8 @@ The Firebase web API key in the source is public configuration. Firestore access
 
 | File | Role |
 |---|---|
-| `manifest.json` | MV3 manifest, content script on `meet.google.com`, popup action |
-| `content.js` | Runs in every Meet tab: identity, status reporting, participant scraping, session polling (Firestore REST) |
+| `manifest.json` | MV3 manifest, side panel, service worker, and content script on `meet.google.com` |
+| `src/content/content.js` | Runs in Meet tabs: identity, active-call session listener, and participant self-reporting |
 | `popup.js` / `popup.html` / `style.css` | Side panel dashboard (Firebase JS SDK, live `onSnapshot` listeners) |
 
 ## Target design
@@ -65,11 +65,11 @@ All fixes below fit one redesign:
 - [x] **3. Closing the tab never marks anyone as left.** Student status heartbeats write server `lastSeen` every 30 seconds; the dashboard shows Left after 60 seconds without an update, and attempts a final `left` write on `pagehide`.
   **Fix:** write a server `lastSeen` every ~30 s. The dashboard shows "Left" when it is older than ~60 s. Also send a final `left` on `pagehide`. Watch the free-tier write quota (20,000 writes/day); 55 students at 30 s is about 6,600 writes per hour.
 
-- [ ] **4. Quota burn from polling.** `checkSessionStatus` polls every 3 s on every open `meet.google.com` tab, even outside a call. For 55 students that is about 1,100 reads/min, enough to exhaust Firestore's free tier (50,000 reads/day) in under an hour.
-  **Fix:** replace polling with one `onSnapshot` on the session doc, started only when actually in a meeting.
+- [x] **4. Quota burn from polling.** Session state uses one Firestore `onSnapshot` listener per participant, opened only while the participant is in an active Meet call. Status heartbeats are written every 30 seconds while tracking is running.
+  **Fix:** replace polling with an `onSnapshot` on the session doc and stop listening outside active calls.
 
-- [ ] **5. Every client runs the participant scraper.** `scrapeAllVisibleParticipants` is labelled "Host Scraper" but has no host check, so every client does a GET per participant every 2 s while the People panel is open.
-  **Fix:** only the host (`session.hostUid === auth.uid`) scrapes. Read the roster from the existing snapshot, write only missing entries in one batch, and scan every ~10 s or via a `MutationObserver`.
+- [x] **5. Participant scraper runs on every client.** The scraper described in the original review is no longer present. Participants report their own status from their extension; the dashboard does not scrape the Meet roster.
+  **Resolution:** keep attendance self-reported. A host-only roster scraper is not part of the current design.
 
 ## B. Wrong or inconsistent data
 
