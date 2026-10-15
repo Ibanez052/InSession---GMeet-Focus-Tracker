@@ -29,6 +29,7 @@ let currentFilter = "all";
 let searchQuery = "";
 let stopSessionListener = null;
 let stopStudentsListener = null;
+const STALE_AFTER_MS = 60_000;
 
 function getGoogleAccessToken() {
   return new Promise((resolve, reject) => {
@@ -67,6 +68,19 @@ function setNotice(message, isError = false) {
   sessionNotice.classList.toggle("error", isError);
 }
 
+function getDisplayStatus(student, now = Date.now()) {
+  if (student.status === "left" || sessionData?.status !== "running") return student.status;
+  const lastSeen = student.lastSeen;
+  const lastSeenMs = typeof lastSeen?.toMillis === "function"
+    ? lastSeen.toMillis()
+    : lastSeen instanceof Date
+      ? lastSeen.getTime()
+      : typeof lastSeen === "string"
+        ? Date.parse(lastSeen)
+        : Number.NaN;
+  return Number.isFinite(lastSeenMs) && now - lastSeenMs <= STALE_AFTER_MS ? student.status : "left";
+}
+
 function updateControls() {
   const isHost = Boolean(user && meetCode && (!sessionData || sessionData.hostUid === user.uid));
   hostControls.hidden = !isHost;
@@ -92,15 +106,16 @@ function updateControls() {
 }
 
 function renderUI() {
-  const total = studentsData.length;
-  const activeCount = studentsData.filter((student) => student.status === "active").length;
-  const awayCount = studentsData.filter((student) => student.status === "away").length;
+  const students = studentsData.map((student) => ({ ...student, displayStatus: getDisplayStatus(student) }));
+  const total = students.length;
+  const activeCount = students.filter((student) => student.displayStatus === "active").length;
+  const awayCount = students.filter((student) => student.displayStatus === "away").length;
   attendeeCountEl.textContent = String(total);
   activeCountEl.textContent = `${activeCount}/${total}`;
   awayCountEl.textContent = `${awayCount}/${total}`;
 
-  const filtered = studentsData.filter((student) =>
-    (currentFilter === "all" || student.status === currentFilter)
+  const filtered = students.filter((student) =>
+    (currentFilter === "all" || student.displayStatus === currentFilter)
     && (student.name || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
   studentTableBody.replaceChildren();
@@ -123,11 +138,11 @@ function renderUI() {
     const statusCell = document.createElement("td");
     statusCell.className = "col-status";
     const badge = document.createElement("span");
-    const active = student.status === "active";
-    badge.className = `status-badge ${active ? "badge-active" : "badge-away"}`;
+    const status = student.displayStatus;
+    badge.className = `status-badge badge-${status}`;
     const dot = document.createElement("span");
     dot.className = "badge-dot";
-    badge.append(dot, document.createTextNode(active ? "Active" : "Away"));
+    badge.append(dot, document.createTextNode(status === "active" ? "Active" : status === "away" ? "Away" : "Left"));
     statusCell.appendChild(badge);
     row.append(nameCell, statusCell);
     studentTableBody.appendChild(row);
@@ -252,3 +267,7 @@ onAuthStateChanged(auth, (signedInUser) => {
   listenToMeeting();
   updateControls();
 });
+
+setInterval(() => {
+  if (sessionData?.status === "running") renderUI();
+}, 5000);

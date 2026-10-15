@@ -59,10 +59,10 @@ All fixes below fit one redesign:
 - [x] **1. Popup cannot load Firebase.** `popup.js` imports from `https://www.gstatic.com/firebasejs/...`; MV3 blocks remote scripts, so the popup stays on its placeholder numbers.
   **Fix:** install `firebase` via npm and bundle `popup.js` and `content.js` with Vite or esbuild. This also removes the need for the REST calls in `content.js`.
 
-- [ ] **2. Window `blur` tracking is overridden by the heartbeat.** `blur` sets "away", but the 2 s heartbeat calls `evaluateStatus()`, which only checks `document.hidden` and flips back to "active". A student with Meet visible on one monitor and YouTube on another is never marked away.
+- [x] **2. Window `blur` tracking is overridden by the heartbeat.** Status now uses both `document.hidden` and `document.hasFocus()`, with a 5-second delay before reporting Away.
   **Fix:** one function everywhere: `active = !document.hidden && document.hasFocus()`. Debounce "away" by about 5 s. Decide how to treat screen sharing and Picture-in-Picture, which also steal focus.
 
-- [ ] **3. Closing the tab never marks anyone as left.** Status is only sent on change, with no heartbeat timestamp and no `pagehide`/`beforeunload`, so a student who leaves stays "Active" forever.
+- [x] **3. Closing the tab never marks anyone as left.** Student status heartbeats write server `lastSeen` every 30 seconds; the dashboard shows Left after 60 seconds without an update, and attempts a final `left` write on `pagehide`.
   **Fix:** write a server `lastSeen` every ~30 s. The dashboard shows "Left" when it is older than ~60 s. Also send a final `left` on `pagehide`. Watch the free-tier write quota (20,000 writes/day); 55 students at 30 s is about 6,600 writes per hour.
 
 - [ ] **4. Quota burn from polling.** `checkSessionStatus` polls every 3 s on every open `meet.google.com` tab, even outside a call. For 55 students that is about 1,100 reads/min, enough to exhaust Firestore's free tier (50,000 reads/day) in under an hour.
@@ -185,4 +185,4 @@ All fixes below fit one redesign:
 
 ## Progress
 
-34 issues total: 10 implementation items done. Firestore rules are deployed to `insession-d7332`, and Google sign-in is working.
+34 issues total: 12 implementation items done. Firestore rules are deployed to `insession-d7332`, and Google sign-in is working.
