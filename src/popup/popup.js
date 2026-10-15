@@ -4,9 +4,9 @@ import { auth, db } from "../shared/firebase.js";
 
 const byId = (id) => document.getElementById(id);
 const studentTableBody = byId("studentTableBody");
-const attendeeCountEl = document.querySelector(".card-yellow .stat-number");
-const activeCountEl = document.querySelector(".card-green .stat-number");
-const awayCountEl = document.querySelector(".card-red .stat-number");
+const attendeeCountEl = byId("attendee-count");
+const activeCountEl = byId("active-count");
+const awayCountEl = byId("away-count");
 const searchInput = document.querySelector(".search-input");
 const hostControls = byId("host-controls");
 const signInButton = byId("sign-in");
@@ -16,10 +16,7 @@ const sessionNotice = byId("session-notice");
 const btnStart = document.querySelector(".btn-start");
 const btnPause = document.querySelector(".btn-pause");
 const btnEnd = document.querySelector(".btn-end");
-const filterBtn = byId("filter-btn");
-const filterDropdown = byId("filterDropdown");
-const currentFilterText = byId("currentFilterText");
-const menuItems = filterDropdown?.querySelectorAll("li") ?? [];
+const statusFilter = byId("status-filter");
 
 let user = null;
 let meetCode = null;
@@ -29,6 +26,8 @@ let currentFilter = "all";
 let searchQuery = "";
 let stopSessionListener = null;
 let stopStudentsListener = null;
+let pendingAction = null;
+let pendingActionLabel = "";
 const STALE_AFTER_MS = 60_000;
 
 function getGoogleAccessToken() {
@@ -99,10 +98,33 @@ function updateControls() {
   setNotice(sessionData?.status === "running" ? `Tracking is on for ${meetCode}.` : "You can start a session for this meeting.");
 
   const status = sessionData?.status ?? "idle";
-  btnStart.disabled = status === "running";
-  btnStart.textContent = status === "paused" ? "Resume" : "Start";
-  btnPause.disabled = status !== "running";
-  btnEnd.disabled = !["running", "paused"].includes(status);
+  btnStart.disabled = status === "running" || Boolean(pendingAction);
+  btnStart.textContent = pendingAction === btnStart ? pendingActionLabel : status === "paused" ? "Resume" : "Start";
+  btnPause.disabled = status !== "running" || Boolean(pendingAction);
+  btnPause.textContent = pendingAction === btnPause ? pendingActionLabel : "Pause";
+  btnEnd.disabled = !["running", "paused"].includes(status) || Boolean(pendingAction);
+  btnEnd.textContent = pendingAction === btnEnd ? pendingActionLabel : "End";
+}
+
+async function runSessionAction(button, pendingLabel, action, errorLabel) {
+  if (pendingAction) return;
+  pendingAction = button;
+  pendingActionLabel = pendingLabel;
+  [btnStart, btnPause, btnEnd].forEach((control) => {
+    control.disabled = true;
+    control.setAttribute("aria-busy", "true");
+  });
+  updateControls();
+  try {
+    await action();
+  } catch (error) {
+    setNotice(`${errorLabel}: ${error.message}`, true);
+  } finally {
+    pendingAction = null;
+    pendingActionLabel = "";
+    [btnStart, btnPause, btnEnd].forEach((control) => control.removeAttribute("aria-busy"));
+    updateControls();
+  }
 }
 
 function renderUI() {
@@ -185,7 +207,9 @@ function listenToMeeting() {
 }
 
 signInButton.addEventListener("click", async () => {
+  const originalLabel = signInButton.textContent;
   signInButton.disabled = true;
+  signInButton.textContent = "Signing in…";
   setNotice("Opening Google sign-in…");
   try {
     const token = await getGoogleAccessToken();
@@ -196,19 +220,26 @@ signInButton.addEventListener("click", async () => {
     setNotice(`Sign in failed: ${error.message || "Check the extension OAuth setup and try again."}`, true);
   } finally {
     signInButton.disabled = false;
+    signInButton.textContent = originalLabel;
   }
 });
 
 signOutButton.addEventListener("click", async () => {
+  signOutButton.disabled = true;
+  signOutButton.textContent = "Signing out…";
   try {
     await signOut(auth);
     await chrome.storage.local.remove("hostUid");
   } catch (error) { setNotice(error.message, true); }
+  finally {
+    signOutButton.disabled = false;
+    signOutButton.textContent = "Sign out";
+  }
 });
 
 btnStart.addEventListener("click", async () => {
   if (!user || !meetCode) return;
-  try {
+  await runSessionAction(btnStart, sessionData?.status === "paused" ? "Resuming…" : "Starting…", async () => {
     const sessionRef = doc(db, "sessions", meetCode);
     if (!sessionData) {
       await setDoc(sessionRef, { meetCode, hostUid: user.uid, runId: crypto.randomUUID(), status: "running", startedAt: serverTimestamp() });
@@ -220,41 +251,38 @@ btnStart.addEventListener("click", async () => {
         resumedAt: serverTimestamp()
       });
     }
-  } catch (error) {
-    setNotice(`Could not start tracking: ${error.message}`, true);
-  }
+  }, "Could not start tracking");
 });
 
 btnPause.addEventListener("click", async () => {
   if (!sessionData || sessionData.hostUid !== user?.uid) return;
-  try { await updateDoc(doc(db, "sessions", meetCode), { status: "paused", pausedAt: serverTimestamp() }); }
-  catch (error) { setNotice(`Could not pause tracking: ${error.message}`, true); }
+  await runSessionAction(btnPause, "Pausing…", () => updateDoc(doc(db, "sessions", meetCode), { status: "paused", pausedAt: serverTimestamp() }), "Could not pause tracking");
 });
 
 btnEnd.addEventListener("click", async () => {
   if (!sessionData || sessionData.hostUid !== user?.uid || !confirm("End tracking for this meeting?")) return;
-  try { await updateDoc(doc(db, "sessions", meetCode), { status: "ended", endedAt: serverTimestamp() }); }
-  catch (error) { setNotice(`Could not end tracking: ${error.message}`, true); }
+  await runSessionAction(btnEnd, "Ending…", () => updateDoc(doc(db, "sessions", meetCode), { status: "ended", endedAt: serverTimestamp() }), "Could not end tracking");
 });
 
 searchInput.addEventListener("input", (event) => { searchQuery = event.target.value.trim(); renderUI(); });
-filterBtn.addEventListener("click", (event) => { event.stopPropagation(); filterDropdown.classList.toggle("show"); });
-menuItems.forEach((item) => item.addEventListener("click", () => {
-  menuItems.forEach((entry) => entry.classList.remove("active"));
-  item.classList.add("active");
-  currentFilter = item.dataset.value;
-  currentFilterText.textContent = item.textContent;
-  filterDropdown.classList.remove("show");
-  renderUI();
-}));
-document.addEventListener("click", (event) => {
-  if (!filterDropdown.contains(event.target) && !filterBtn.contains(event.target)) filterDropdown.classList.remove("show");
-});
+statusFilter.addEventListener("change", (event) => { currentFilter = event.target.value; renderUI(); });
 
-chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-  meetCode = getMeetCode(tab?.url);
+function useActiveTab(tab) {
+  const nextMeetCode = getMeetCode(tab?.url);
+  if (nextMeetCode === meetCode) return;
+  meetCode = nextMeetCode;
+  listenToMeeting();
   updateControls();
-  if (user) listenToMeeting();
+}
+
+function refreshActiveTab() {
+  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => useActiveTab(tab));
+}
+
+refreshActiveTab();
+chrome.tabs.onActivated.addListener(refreshActiveTab);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tab.active && (changeInfo.url || changeInfo.status === "complete")) refreshActiveTab();
 });
 
 onAuthStateChanged(auth, (signedInUser) => {

@@ -3,14 +3,20 @@
   "name": "InSession – GMeet Focus Tracker",
   "version": "1.0",
   "description": "Shows Google Meet participant focus status during a session.",
-  "permissions": ["identity", "activeTab", "storage"],
+  "permissions": ["identity", "activeTab", "storage", "sidePanel"],
+  "background": {
+    "service_worker": "dist/src/background/service-worker.js"
+  },
   "oauth2": {
     "client_id": "433861086598-lssi7ehea8ij8339c7d4197ksmhv5j92.apps.googleusercontent.com",
     "scopes": ["openid", "email", "profile"]
   },
   "action": {
-    "default_popup": "dist/src/popup/popup.html",
+    "default_title": "Open InSession attendance dashboard",
     "default_icon": "assets/logo.png"
+  },
+  "side_panel": {
+    "default_path": "dist/src/popup/popup.html"
   },
   "host_permissions": [
     "https://meet.google.com/*",

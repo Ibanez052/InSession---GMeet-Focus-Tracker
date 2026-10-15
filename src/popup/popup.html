@@ -13,7 +13,7 @@
     <!-- Top Bar -->
     <header>
       <div class="brand-container">
-        <img src="../../assets/logo.png" alt="InSession Logo" style="height: 80px; width: auto;" />
+        <span class="brand-name">InSession</span>
       </div>
       <div class="auth-controls">
         <span id="account-status" role="status">Sign in to manage a session</span>
@@ -26,17 +26,17 @@
     <main>
       <!-- Stats Counters -->
       <section class="stats-grid">
-        <div class="stat-card card-yellow">
+        <div class="stat-card">
           <div class="stat-title">Attendees</div>
-          <div class="stat-number">55</div>
+          <div class="stat-number" id="attendee-count">–</div>
         </div>
-        <div class="stat-card card-green">
+        <div class="stat-card">
           <div class="stat-title">Active</div>
-          <div class="stat-number">49/55</div>
+          <div class="stat-number" id="active-count">–</div>
         </div>
-        <div class="stat-card card-red">
+        <div class="stat-card">
           <div class="stat-title">Away</div>
-          <div class="stat-number">6/56</div>
+          <div class="stat-number" id="away-count">–</div>
         </div>
       </section>
 
@@ -54,25 +54,21 @@
           <div class="filter-tools">
             <div class="search-wrapper">
               <!-- Magnifying Glass Icon -->
-              <img src="../../assets/search-icon.png" alt="Search Icon" class="search-icon"/>
-              <input type="text" class="search-input" placeholder="Search participant" />
+              <img src="../../assets/search-icon.png" alt="" aria-hidden="true" class="search-icon" />
+              <input type="search" class="search-input" aria-label="Search participants by name" placeholder="Search participant" />
             </div>
 
             <!-- Filter Dropdown Container -->
-             <div class="dropdown-wrapper">
-                <button type="button" class="filter-btn" id="filter-btn">
-                <!-- Filter / Funnel Icon -->
-                <img src="../../assets/bars-filter.png" alt="Filter Icon" class="filter-icon"/>
-                <span id="currentFilterText">Show all</span>
-                <span class="dropdown-arrow">V</span>
-              </button>
-              <ul class="dropdown-menu" id="filterDropdown">
-                <li data-value="all" class="active">Show all</li>
-                <li data-value="active">Active</li>
-                <li data-value="away">Away</li>
-                <li data-value="left">Left</li>
-              </ul>
-             </div>
+            <label class="sr-only" for="status-filter">Filter participants by status</label>
+            <div class="filter-select-wrap">
+              <img src="../../assets/bars-filter.png" alt="" aria-hidden="true" class="filter-icon" />
+              <select class="filter-select" id="status-filter">
+                <option value="all">Show all</option>
+                <option value="active">Active</option>
+                <option value="away">Away</option>
+                <option value="left">Left</option>
+              </select>
+            </div>
             
           </div>
         </div>
@@ -82,8 +78,8 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th class="col-student">Student</th>
-                <th class="col-status">Status</th>
+                <th class="col-student" scope="col">Student</th>
+                <th class="col-status" scope="col">Status</th>
               </tr>
             </thead>
             <tbody id="studentTableBody">
