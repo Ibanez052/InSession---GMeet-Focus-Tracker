@@ -62,8 +62,8 @@ All fixes below fit one redesign:
 - [x] **2. Window `blur` tracking is overridden by the heartbeat.** Status now uses both `document.hidden` and `document.hasFocus()`, with a 5-second delay before reporting Away.
   **Fix:** one function everywhere: `active = !document.hidden && document.hasFocus()`. Debounce "away" by about 5 s. Decide how to treat screen sharing and Picture-in-Picture, which also steal focus.
 
-- [x] **3. Closing the tab never marks anyone as left.** Student status heartbeats write server `lastSeen` every 30 seconds; the dashboard shows Left after 60 seconds without an update, and attempts a final `left` write on `pagehide`.
-  **Fix:** write a server `lastSeen` every ~30 s. The dashboard shows "Left" when it is older than ~60 s. Also send a final `left` on `pagehide`. Watch the free-tier write quota (20,000 writes/day); 55 students at 30 s is about 6,600 writes per hour.
+- [x] **3. Closing the tab never marks anyone as left.** Student status heartbeats write server `lastSeen` every 30 seconds; leaving the detected Meet call sends a prompt `left` update after a brief confirmation, with `pagehide` as a best-effort fallback. The dashboard shows Left after 60 seconds without an update if those writes are interrupted.
+  **Fix:** write a server `lastSeen` every ~30 s. The dashboard shows "Left" when it is older than ~60 s. Also send a final `left` when the Meet call ends and on `pagehide`. Watch the free-tier write quota (20,000 writes/day); 55 students at 30 s is about 6,600 writes per hour.
 
 - [x] **4. Quota burn from polling.** Session state uses one Firestore `onSnapshot` listener per participant, opened only while the participant is in an active Meet call. Status heartbeats are written every 30 seconds while tracking is running.
   **Fix:** replace polling with an `onSnapshot` on the session doc and stop listening outside active calls.
@@ -88,8 +88,8 @@ All fixes below fit one redesign:
 - [ ] **10. Scraped people show "Active" though they are not monitored.**
   **Fix:** give them their own status ("Not tracked") and a fourth stat card.
 
-- [ ] **11. The instructor appears as a student** because their own content script also reports status.
-  **Fix:** skip reporting when `uid === hostUid`.
+- [x] **11. The instructor appears as a student** because their own content script also reports status. The content script skips host status reports, and the dashboard filters and removes any stale host student record.
+  **Fix:** skip reporting when `uid === hostUid`; clean up legacy host records from the student list.
 
 - [x] **12. Quick End → Start loses students; pause/resume can leave stale status.** Client status can remain stale across a quick restart or pause/resume.
   **Fix:** give each run a `runId`. Clients reset `lastReportedStatus` whenever it changes, and on resume.

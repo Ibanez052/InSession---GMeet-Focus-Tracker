@@ -1,5 +1,5 @@
 import { GoogleAuthProvider, linkWithCredential, onAuthStateChanged, signInAnonymously, signInWithCredential, signOut } from "firebase/auth/web-extension";
-import { collection, doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
 const byId = (id) => document.getElementById(id);
@@ -265,7 +265,17 @@ function listenToMeeting() {
     studentsData = [];
     if (isGoogleAccount(user) && sessionData?.hostUid === user.uid) {
       stopStudentsListener = onSnapshot(collection(sessionRef, "students"), (students) => {
-        studentsData = students.docs.map((student) => ({ id: student.id, ...student.data() }));
+        const hostRecord = students.docs.find((student) =>
+          student.id === sessionData.hostUid || student.data().uid === sessionData.hostUid
+        );
+        if (hostRecord) {
+          void deleteDoc(doc(sessionRef, "students", hostRecord.id)).catch((error) => {
+            console.error("[InSession] Could not remove the host from the attendee list:", error);
+          });
+        }
+        studentsData = students.docs
+          .filter((student) => student.id !== sessionData.hostUid && student.data().uid !== sessionData.hostUid)
+          .map((student) => ({ id: student.id, ...student.data() }));
         studentsData.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         renderUI();
       }, (error) => setNotice(`Could not read attendees: ${error.message}`, true));
