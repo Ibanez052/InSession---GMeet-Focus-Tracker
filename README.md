@@ -13,7 +13,7 @@ npm ci
 npm run build
 ```
 
-For local development, keep the extension loaded from the repository root (the folder containing the top-level `manifest.json`). The root manifest points Chrome at the bundled popup and content script in `dist/`, so rebuilding does not change the extension ID used by OAuth. The generated `dist/` folder also contains a standalone manifest for packaging; loading that folder separately creates a different unpacked-extension ID unless a stable manifest key is configured.
+For local development, keep the extension loaded from the repository root (the folder containing the top-level `manifest.json`). Clicking the extension's toolbar icon opens its dashboard in Chrome's side panel. The root manifest points Chrome at the bundled side panel, content script, and service worker in `dist/`, so rebuilding does not change the extension ID used by OAuth. The generated `dist/` folder also contains a standalone manifest for packaging; loading that folder separately creates a different unpacked-extension ID unless a stable manifest key is configured.
 
 Before signing in or tracking participants:
 
@@ -31,7 +31,7 @@ The Firebase web API key in the source is public configuration. Firestore access
 |---|---|
 | `manifest.json` | MV3 manifest, content script on `meet.google.com`, popup action |
 | `content.js` | Runs in every Meet tab: identity, status reporting, participant scraping, session polling (Firestore REST) |
-| `popup.js` / `popup.html` / `style.css` | Host dashboard (Firebase JS SDK, live `onSnapshot` listeners) |
+| `popup.js` / `popup.html` / `style.css` | Side panel dashboard (Firebase JS SDK, live `onSnapshot` listeners) |
 
 ## Target design
 
@@ -158,13 +158,13 @@ All fixes below fit one redesign:
 - [ ] **27. Logout does nothing** (`href="#logout"`).
   **Fix:** wire it to Firebase `signOut`, or hide it until auth exists.
 
-- [ ] **28. Popup layout.** No fixed width, `min-height: 100vh` flex centering, and an unbounded table that will overflow with 55 rows.
-  **Fix:** fixed width (~720 px), remove the centering, give the table a `max-height` with a scrolling body and sticky header.
+- [x] **28. Popup layout.** The dashboard now opens in Chrome's resizable side panel, and the attendee table scrolls within the available panel height with a sticky header.
+  **Fix:** use a responsive side panel, remove the centering, and give the table a scrolling body with a sticky header.
 
 - [ ] **29. Hard-coded numbers in `popup.html`** (55, 49/55, 6/56 – the last is also a typo).
   **Fix:** show "–" until real data arrives.
 
-- [ ] **30. Accessibility and wording.** "Inactive" vs "Away", a literal "V" as the dropdown arrow, an unlabeled search box, a non-accessible `<ul>` dropdown, and decorative icons with descriptive `alt` text.
+- [x] **30. Accessibility and wording.** The filter uses a native keyboard-accessible `<select>` with a CSS chevron; search and filter controls have accessible labels, Away wording is consistent, and decorative icons have empty alt text.
   **Fix:** use "Away" everywhere, a CSS chevron, `aria-label` on the search box, a proper dropdown role or a `<select>`, and `alt=""` on decorative icons.
 
 - [ ] **31. CSS cleanup.** Unused `.brand-logo svg` and `.brand-text` rules, a duplicate `padding-left`, and inline styles in the HTML and JS.
@@ -185,4 +185,4 @@ All fixes below fit one redesign:
 
 ## Progress
 
-34 issues total: 12 implementation items done. Firestore rules are deployed to `insession-d7332`, and Google sign-in is working.
+34 issues total: 14 implementation items done. Firestore rules are deployed to `insession-d7332`, and Google sign-in is working.
