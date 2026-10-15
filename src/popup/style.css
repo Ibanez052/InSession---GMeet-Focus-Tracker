@@ -461,6 +461,15 @@
   background-color: #80868b;
 }
 
+.badge-untracked {
+  background-color: #f1eafa;
+  color: #67429a;
+}
+
+.badge-untracked .badge-dot {
+  background-color: #8864b4;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
 }

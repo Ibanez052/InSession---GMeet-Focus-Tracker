@@ -2,8 +2,18 @@ import { onAuthStateChanged, signInAnonymously } from "firebase/auth/web-extensi
 import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
-const NAME_BLACKLIST = new Set(["people", "chat", "activities", "host controls", "mute", "leave call", "more options"]);
+const MEET_UI = Object.freeze({
+  leaveControls: 'button[aria-label], [role="button"][aria-label]',
+  leaveLabels: [/^leave call$/i, /^leave meeting$/i],
+  hostControls: 'button[aria-label], [role="button"][aria-label]',
+  hostControlLabel: /\bhost controls\b/i,
+  googleAccount: '[aria-label*="Google Account:" i]',
+  selfName: "[data-self-name]",
+  participantRows: '[role="listitem"]',
+  youLabel: /\(You\)/i
+});
 const AWAY_DEBOUNCE_MS = 5000;
+const HEARTBEAT_MS = 30000;
 let meetCode = null;
 let session = null;
 let currentRunId = null;
@@ -14,6 +24,7 @@ let stopSessionListener = null;
 let meetingActive = false;
 let meetingContextTimer = null;
 let leaveConfirmationTimer = null;
+let heartbeatTimer = null;
 let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
@@ -25,29 +36,34 @@ function readMeetCode() {
 }
 
 function isInMeeting() {
-  return Boolean(meetCode && document.querySelector('button[aria-label*="Leave call" i], button[aria-label*="Leave meeting" i]'));
+  if (!meetCode) return false;
+  const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
+    const label = control.getAttribute("aria-label")?.trim() ?? "";
+    return MEET_UI.leaveLabels.some((pattern) => pattern.test(label));
+  });
+  return Boolean(leaveControl);
 }
 
 function hasMeetHostControls() {
   // Google Meet exposes its host-only controls as a toolbar button. This is a
   // UI signal, not a security boundary; fail closed when the label is absent.
-  return Boolean(document.querySelector(
-    'button[aria-label*="host controls" i], [role="button"][aria-label*="host controls" i]'
-  ));
+  return Array.from(document.querySelectorAll(MEET_UI.hostControls))
+    .some((control) => MEET_UI.hostControlLabel.test(control.getAttribute("aria-label") ?? ""));
 }
 
 function isCleanName(value) {
   const name = value?.trim();
-  return Boolean(name && name.length >= 2 && name.length <= 80 && !NAME_BLACKLIST.has(name.toLowerCase()));
+  return Boolean(name && name.length >= 2 && name.length <= 80);
 }
 
 function findMyName() {
-  const account = document.querySelector('[aria-label*="Google Account:" i]')?.getAttribute("aria-label") ?? "";
+  const account = document.querySelector(MEET_UI.googleAccount)?.getAttribute("aria-label") ?? "";
   const accountMatch = account.match(/Google Account:\s*([^,(]+)/i);
   if (isCleanName(accountMatch?.[1])) return accountMatch[1].trim();
-  const self = document.querySelector("[data-self-name]")?.getAttribute("data-self-name");
+  const self = document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name");
   if (isCleanName(self)) return self.trim();
-  const you = Array.from(document.querySelectorAll('[role="listitem"]')).find((el) => /\(You\)/i.test(el.textContent ?? ""));
+  const you = Array.from(document.querySelectorAll(MEET_UI.participantRows))
+    .find((el) => MEET_UI.youLabel.test(el.textContent ?? ""));
   const text = you?.textContent?.replace(/\s*\(You\)/gi, "").trim();
   return isCleanName(text) ? text : auth.currentUser?.displayName || null;
 }
@@ -95,6 +111,10 @@ function renderTrackingNotice() {
 function listenForSession() {
   stopSessionListener?.();
   stopSessionListener = null;
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
   session = null;
   currentRunId = null;
   lastStatus = null;
@@ -115,8 +135,15 @@ function listenForSession() {
     }
     renderTrackingNotice();
     if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
+      if (heartbeatTimer !== null) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
       lastStatus = null;
       return;
+    }
+    if (heartbeatTimer === null) {
+      heartbeatTimer = setInterval(() => scheduleStatusReport(true), HEARTBEAT_MS);
     }
     scheduleStatusReport();
   }, (error) => console.error("[InSession] Session listener failed:", error));
@@ -257,5 +284,4 @@ window.addEventListener("pagehide", () => {
   void reportStatus(true, "left");
 });
 window.addEventListener("pageshow", () => scheduleStatusReport(true));
-setInterval(() => scheduleStatusReport(true), 30000);
 console.info("[InSession] Authenticated tracker ready.");
