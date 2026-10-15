@@ -368,3 +368,12 @@
 .badge-away .badge-dot {
   background-color: #f72a2a;
 }
+
+.badge-left {
+  background-color: #e8eaed;
+  color: #3c4043;
+}
+
+.badge-left .badge-dot {
+  background-color: #80868b;
+}

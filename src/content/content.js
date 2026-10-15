@@ -3,6 +3,7 @@ import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
 const NAME_BLACKLIST = new Set(["people", "chat", "activities", "host controls", "mute", "leave call", "more options"]);
+const AWAY_DEBOUNCE_MS = 5000;
 let meetCode = null;
 let session = null;
 let currentRunId = null;
@@ -12,6 +13,7 @@ let storedHostUid = null;
 let stopSessionListener = null;
 let lastStatus = null;
 let lastHeartbeatAt = 0;
+let awayTimer = null;
 
 function readMeetCode() {
   if (location.hostname !== "meet.google.com") return null;
@@ -56,15 +58,38 @@ function listenForSession() {
       lastStatus = null;
       return;
     }
-    reportStatus();
+    scheduleStatusReport();
   }, (error) => console.error("[InSession] Session listener failed:", error));
 }
 
-async function reportStatus(forceHeartbeat = false) {
+function getCurrentStatus() {
+  return !document.hidden && document.hasFocus() ? "active" : "away";
+}
+
+function scheduleStatusReport(forceHeartbeat = false) {
+  const status = getCurrentStatus();
+  if (status === "away" && lastStatus !== "away") {
+    if (awayTimer === null) {
+      awayTimer = setTimeout(() => {
+        awayTimer = null;
+        if (getCurrentStatus() === "away") void reportStatus(true);
+      }, AWAY_DEBOUNCE_MS);
+    }
+    return;
+  }
+
+  if (awayTimer !== null) {
+    clearTimeout(awayTimer);
+    awayTimer = null;
+  }
+  void reportStatus(forceHeartbeat);
+}
+
+async function reportStatus(forceHeartbeat = false, statusOverride = null) {
   if (!currentUid || !session || session.status !== "running" || session.hostUid === currentUid || !isInMeeting()) return;
   const name = findMyName();
   if (name) currentName = name;
-  const status = document.hidden || !document.hasFocus() ? "away" : "active";
+  const status = statusOverride ?? getCurrentStatus();
   const now = Date.now();
   if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return;
   try {
@@ -113,8 +138,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
 meetCode = readMeetCode();
 const routeObserver = new MutationObserver(handleRouteChange);
 routeObserver.observe(document.documentElement, { childList: true, subtree: true });
-document.addEventListener("visibilitychange", () => reportStatus(true));
-window.addEventListener("focus", () => reportStatus(true));
-window.addEventListener("blur", () => reportStatus(true));
-setInterval(() => reportStatus(true), 30000);
+document.addEventListener("visibilitychange", () => scheduleStatusReport(true));
+window.addEventListener("focus", () => scheduleStatusReport(true));
+window.addEventListener("blur", () => scheduleStatusReport(true));
+window.addEventListener("pagehide", () => {
+  if (awayTimer !== null) clearTimeout(awayTimer);
+  awayTimer = null;
+  void reportStatus(true, "left");
+});
+window.addEventListener("pageshow", () => scheduleStatusReport(true));
+setInterval(() => scheduleStatusReport(true), 30000);
 console.info("[InSession] Authenticated tracker ready.");
