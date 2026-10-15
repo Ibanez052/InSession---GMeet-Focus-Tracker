@@ -34,6 +34,7 @@ let stopStudentsListener = null;
 let pendingAction = null;
 let pendingActionLabel = "";
 let anonymousAuthPromise = null;
+let stalenessTimer = null;
 const STALE_AFTER_MS = 60_000;
 
 function getGoogleAccessToken() {
@@ -100,16 +101,35 @@ function ensureParticipantAuth() {
 }
 
 function getDisplayStatus(student, now = Date.now()) {
+  if (!["active", "away", "left"].includes(student.status)) return "untracked";
   if (student.status === "left" || sessionData?.status !== "running") return student.status;
+  const lastSeenMs = getLastSeenMillis(student);
+  return Number.isFinite(lastSeenMs) && now - lastSeenMs <= STALE_AFTER_MS ? student.status : "untracked";
+}
+
+function getLastSeenMillis(student) {
   const lastSeen = student.lastSeen;
-  const lastSeenMs = typeof lastSeen?.toMillis === "function"
+  return typeof lastSeen?.toMillis === "function"
     ? lastSeen.toMillis()
     : lastSeen instanceof Date
       ? lastSeen.getTime()
       : typeof lastSeen === "string"
         ? Date.parse(lastSeen)
         : Number.NaN;
-  return Number.isFinite(lastSeenMs) && now - lastSeenMs <= STALE_AFTER_MS ? student.status : "left";
+}
+
+function scheduleStalenessRefresh(now = Date.now()) {
+  if (stalenessTimer !== null) clearTimeout(stalenessTimer);
+  stalenessTimer = null;
+  if (sessionData?.status !== "running") return;
+  const nextStaleAt = studentsData
+    .filter((student) => ["active", "away"].includes(student.status))
+    .map(getLastSeenMillis)
+    .filter((lastSeenMs) => Number.isFinite(lastSeenMs) && lastSeenMs + STALE_AFTER_MS + 1 > now)
+    .reduce((earliest, lastSeenMs) => Math.min(earliest, lastSeenMs + STALE_AFTER_MS + 1), Number.POSITIVE_INFINITY);
+  if (Number.isFinite(nextStaleAt)) {
+    stalenessTimer = setTimeout(renderUI, Math.max(0, nextStaleAt - now));
+  }
 }
 
 function updateControls() {
@@ -191,6 +211,7 @@ async function runSessionAction(button, pendingLabel, action, errorLabel) {
 }
 
 function renderUI() {
+  scheduleStalenessRefresh();
   const students = studentsData.map((student) => ({ ...student, displayStatus: getDisplayStatus(student) }));
   const total = students.length;
   const activeCount = students.filter((student) => student.displayStatus === "active").length;
@@ -227,7 +248,11 @@ function renderUI() {
     badge.className = `status-badge badge-${status}`;
     const dot = document.createElement("span");
     dot.className = "badge-dot";
-    badge.append(dot, document.createTextNode(status === "active" ? "Active" : status === "away" ? "Away" : "Left"));
+    const statusLabel = status === "active" ? "Active"
+      : status === "away" ? "Away"
+        : status === "left" ? "Left"
+          : "Not reporting";
+    badge.append(dot, document.createTextNode(statusLabel));
     statusCell.appendChild(badge);
     row.append(nameCell, statusCell);
     studentTableBody.appendChild(row);
@@ -396,7 +421,6 @@ chrome.tabs.onActivated.addListener(refreshActiveTab);
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tab.active && (changeInfo.url || changeInfo.status === "complete")) refreshActiveTab();
 });
-setInterval(refreshActiveTab, 2000);
 
 onAuthStateChanged(auth, (signedInUser) => {
   user = signedInUser;
@@ -404,7 +428,3 @@ onAuthStateChanged(auth, (signedInUser) => {
   listenToMeeting();
   updateControls();
 });
-
-setInterval(() => {
-  if (sessionData?.status === "running") renderUI();
-}, 5000);

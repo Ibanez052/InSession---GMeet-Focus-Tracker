@@ -2,7 +2,7 @@
 
 A Chrome (Manifest V3) extension for Google Meet that shows whether participants are in the Meet tab or somewhere else. Each participant's extension reports its own status to Firestore, and the host's side panel shows a live attendance dashboard (Start / Pause / End, search, filter).
 
-> **Status: prototype.** This README documents every known issue found in a code review of `content.js`, `popup.js`, `popup.html`, `style.css` and `manifest.json`, together with the planned fix for each. Tick the boxes as items are completed.
+> **Status: prototype.** This README tracks known issues and planned improvements. Checked items are implemented or no longer apply to the participant self-reporting design.
 
 ## Build and Firebase setup
 
@@ -47,10 +47,9 @@ All fixes below fit one redesign:
 
 1. **Foundation:** #1, #17, #18, #19 (loading, auth, rules, host-only controls)
 2. **Data model:** #6, #8, #12 (per-meeting sessions, uid-based IDs, run IDs)
-3. **Accurate status and quota:** #2, #3, #4
-4. **Scraper behaviour:** #5, #9, #10, #11
-5. **Safety and usability:** #20, #22, #24, #25
-6. **Polish and repo cleanup:** everything else
+3. **Accurate tracking:** #2, #3, #4, #7, #13, #15, #16
+4. **Safety and usability:** #20, #22, #23, #24, #25
+5. **Polish and repo cleanup:** #31, #33, #34
 
 ---
 
@@ -62,8 +61,8 @@ All fixes below fit one redesign:
 - [x] **2. Window `blur` tracking is overridden by the heartbeat.** Status now uses both `document.hidden` and `document.hasFocus()`, with a 5-second delay before reporting Away.
   **Fix:** one function everywhere: `active = !document.hidden && document.hasFocus()`. Debounce "away" by about 5 s. Decide how to treat screen sharing and Picture-in-Picture, which also steal focus.
 
-- [x] **3. Closing the tab never marks anyone as left.** Student status heartbeats write server `lastSeen` every 30 seconds; leaving the detected Meet call sends a prompt `left` update after a brief confirmation, with `pagehide` as a best-effort fallback. The dashboard shows Left after 60 seconds without an update if those writes are interrupted.
-  **Fix:** write a server `lastSeen` every ~30 s. The dashboard shows "Left" when it is older than ~60 s. Also send a final `left` when the Meet call ends and on `pagehide`. Watch the free-tier write quota (20,000 writes/day); 55 students at 30 s is about 6,600 writes per hour.
+- [x] **3. Closing the tab never marks anyone as left.** Student status heartbeats write server `lastSeen` every 30 seconds; leaving the detected Meet call sends a prompt `left` update after a brief confirmation, with `pagehide` as a best-effort fallback. The dashboard shows **Not reporting** after 60 seconds without an update if those writes are interrupted; **Left** is reserved for an explicit leave update.
+  **Fix:** write a server `lastSeen` every ~30 s. Show "Not reporting" when it is older than ~60 s. Also send a final `left` when the Meet call ends and on `pagehide`. Watch the free-tier write quota (20,000 writes/day); 55 students at 30 s is about 6,600 writes per hour.
 
 - [x] **4. Quota burn from polling.** Session state uses one Firestore `onSnapshot` listener per participant, opened only while the participant is in an active Meet call. Status heartbeats are written every 30 seconds while tracking is running.
   **Fix:** replace polling with an `onSnapshot` on the session doc and stop listening outside active calls.
@@ -76,17 +75,14 @@ All fixes below fit one redesign:
 - [x] **6. One global session for everyone.** There is a single `session/current` doc and one `students` collection with no meeting code, so two classes using the extension at once get mixed together.
   **Fix:** key sessions by the meeting code from `location.pathname`. Reset local state when the code changes (Meet is a single-page app).
 
-- [ ] **7. Name blacklist rejects real names.** `UI_BLACKLIST` uses `includes()`: "Pineda" is rejected for "pin", "Claudio" for "audio", "Chatterjee" for "chat". Those students are never tracked.
-  **Fix:** exact matches only, or drop the blacklist for the narrow `options for X` path.
+- [x] **7. Name blacklist rejects real names.** The blacklist was removed. Names are read from the account/self-name elements and are checked only for basic validity, so ordinary names such as "Pineda", "Claudio", and "Chatterjee" are accepted.
 
 - [x] **8. Doc ID collisions.** Names are reduced to `[a-z0-9]`, so "José" becomes `jos_`, non-Latin names collapse to underscores, and "Ana-Maria" and "Ana Maria" collide.
   **Fix:** use the auth `uid` as the doc ID and store the name as a field.
 
-- [ ] **9. Ghost and duplicate entries, and nobody is ever removed.** The scraper uses participant-list names while each student reports under their Google Account name; if they differ, one person gets two docs.
-  **Fix:** mark scraped entries `source: "scraped"` and merge them when a matching self-report arrives. Mark someone "left" after missing two consecutive roster scans.
+- [x] **9. Scraped and self-reported entries can duplicate.** This no longer applies: InSession does not scrape the participant roster; each installed extension reports its own attendee record.
 
-- [ ] **10. Scraped people show "Active" though they are not monitored.**
-  **Fix:** give them their own status ("Not tracked") and a fourth stat card.
+- [x] **10. Scraped people show "Active" without being monitored.** This no longer applies because there are no scraped attendee records.
 
 - [x] **11. The instructor appears as a student** because their own content script also reports status. The content script skips host status reports, and the dashboard filters and removes any stale host student record.
   **Fix:** skip reporting when `uid === hostUid`; clean up legacy host records from the student list.
@@ -94,19 +90,16 @@ All fixes below fit one redesign:
 - [x] **12. Quick End → Start loses students; pause/resume can leave stale status.** Client status can remain stale across a quick restart or pause/resume.
   **Fix:** give each run a `runId`. Clients reset `lastReportedStatus` whenever it changes, and on resume.
 
-- [ ] **13. Anything not "active" renders as Away.**
-  **Fix:** define explicit statuses: `active`, `away`, `left`, `untracked`.
+- [x] **13. Unknown or stale status is shown as Away/Left.** The dashboard handles `active`, `away`, and `left` explicitly. Invalid status values and stale/missing heartbeats display as **Not reporting**, with their own filter and badge.
 
 - [x] **14. Client-side timestamps.**
   **Fix:** use `serverTimestamp()`.
 
 ## C. Fragile Meet scraping
 
-- [ ] **15. English-only labels and a loose `isInMeeting()`.** It depends on "Leave call", "options for", "(You)", "Google Account:". Any button with "call" in its label matches, and `[data-call-ended]` stays true after the call ends.
-  **Fix:** combine the URL pattern (`abc-defg-hij`) with structural checks. Remove `[data-call-ended]` and `*="call"`. Keep all selectors in one config object so a Meet UI change is a one-file fix.
+- [ ] **15. Meet detection depends on localized UI labels.** Meeting detection now requires a valid Meet-code URL and an exact leave-action label; broad `*="call"` matching is gone, and Meet UI selectors are kept together in `MEET_UI`. The accessible leave-action label is still English-only, so localized Meet interfaces need follow-up support.
 
-- [ ] **16. Loops run forever, even outside meetings.** `getMyName` Method D scans every `span, div` repeatedly until it succeeds, and the intervals never stop.
-  **Fix:** start the loops on join and stop them on leave. Retry the identity lookup with backoff instead of scanning continuously.
+- [x] **16. Tracking loops run outside meetings.** Participant heartbeats now start only while a meeting is active and its session is running, and stop when either condition ends. Identity lookup happens only when a status report is due; the popup uses tab activation/update events instead of polling the active tab.
 
 ## D. Security and privacy
 
@@ -139,8 +132,7 @@ All fixes below fit one redesign:
 - [x] **20. Markup injection via `innerHTML`.** Student names are user-controlled and inserted unescaped. MV3 blocks inline handlers, which limits the damage, but it should still be fixed.
   **Fix:** build rows with `createElement` and `textContent`.
 
-- [ ] **21. Firebase API key is public in the repo.**
-  **Fix:** treat it as public. Protection comes from the rules (and optionally App Check), not from hiding the key.
+- [x] **21. Firebase API key is public in the repo.** This is expected for client-side Firebase configuration. Firestore rules protect data access; the key is not an authorization secret.
 
 - [ ] **22. Participant privacy notice and retention.** A notice now appears on the Meet page while a non-host's session is running. It explains which status data is shared, that only the Meet tab is monitored, and that session data currently has no automatic deletion. Tracking remains limited to a running session. The retention duration and deletion process still need a product decision before this item is complete.
   **Remaining:** choose a retention period and implement/document the corresponding deletion behavior.
@@ -159,14 +151,12 @@ All fixes below fit one redesign:
 - [x] **26. Manual status override fights live reports.**
   **Fix:** store it as a separate `override` field with a visible marker, add an undo, or remove the feature.
 
-- [ ] **27. Logout does nothing** (`href="#logout"`).
-  **Fix:** wire it to Firebase `signOut`, or hide it until auth exists.
+- [x] **27. Logout does nothing.** Sign-out is a button wired to Firebase `signOut`.
 
 - [x] **28. Popup layout.** The dashboard now opens in Chrome's resizable side panel, and the attendee table scrolls within the available panel height with a sticky header.
   **Fix:** use a responsive side panel, remove the centering, and give the table a scrolling body with a sticky header.
 
-- [ ] **29. Hard-coded numbers in `popup.html`** (55, 49/55, 6/56 – the last is also a typo).
-  **Fix:** show "–" until real data arrives.
+- [x] **29. Hard-coded numbers in `popup.html`.** Counters start at "–" and update from live attendee data.
 
 - [x] **30. Accessibility and wording.** The filter uses a native keyboard-accessible `<select>` with a CSS chevron; search and filter controls have accessible labels, Away wording is consistent, and decorative icons have empty alt text.
   **Fix:** use "Away" everywhere, a CSS chevron, `aria-label` on the search box, a proper dropdown role or a `<select>`, and `alt=""` on decorative icons.
@@ -176,17 +166,14 @@ All fixes below fit one redesign:
 
 ## F. Repo and manifest
 
-- [ ] **32. GitHub is behind the local copy** (the GitHub `manifest.json` lacks the `action`/`default_popup` entry).
-  **Fix:** commit and push.
+- [x] **32. GitHub is behind the local copy.** The action and side-panel manifest changes are merged into `main`.
 
-- [ ] **33. Documentation.** There was no README, LICENSE or setup guide.
-  **Fix:** this README is the start. Still to add: Firebase project setup, rules deployment, how to load the unpacked extension, the build step, and a LICENSE.
+- [ ] **33. Documentation.** This README covers Firebase setup, rules deployment, and the build/unpacked-extension workflow. A project LICENSE is still needed.
 
-- [ ] **34. Manifest gaps.** Name and description are inconsistent ("InSession Collector" vs "InSession"), there are no `icons` (16/48/128), no service worker, and no `identity` permission.
-  **Fix:** align naming, add icons, add a background service worker if needed, and add the new permissions.
+- [ ] **34. Manifest icons.** The name, identity permission, action entry, side panel, and background service worker are present. Add standard 16/48/128 extension icons and declare them in the manifest.
 
 ---
 
 ## Progress
 
-34 issues total: 14 implementation items done. Firestore rules are deployed to `insession-d7332`, and Google sign-in is working.
+Firestore rules are deployed to `insession-d7332`, and Google sign-in is working. Some original review items have been rewritten because the implementation no longer uses the scraper-based design.
