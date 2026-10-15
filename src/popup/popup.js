@@ -196,9 +196,14 @@ btnStart.addEventListener("click", async () => {
   try {
     const sessionRef = doc(db, "sessions", meetCode);
     if (!sessionData) {
-      await setDoc(sessionRef, { meetCode, hostUid: user.uid, status: "running", startedAt: serverTimestamp() });
+      await setDoc(sessionRef, { meetCode, hostUid: user.uid, runId: crypto.randomUUID(), status: "running", startedAt: serverTimestamp() });
     } else if (sessionData.hostUid === user.uid) {
-      await updateDoc(sessionRef, { status: "running", resumedAt: serverTimestamp() });
+      const nextRun = sessionData.status === "ended";
+      await updateDoc(sessionRef, {
+        status: "running",
+        ...(nextRun ? { runId: crypto.randomUUID(), startedAt: serverTimestamp() } : {}),
+        resumedAt: serverTimestamp()
+      });
     }
   } catch (error) {
     setNotice(`Could not start tracking: ${error.message}`, true);

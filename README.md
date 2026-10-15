@@ -79,7 +79,7 @@ All fixes below fit one redesign:
 - [ ] **7. Name blacklist rejects real names.** `UI_BLACKLIST` uses `includes()`: "Pineda" is rejected for "pin", "Claudio" for "audio", "Chatterjee" for "chat". Those students are never tracked.
   **Fix:** exact matches only, or drop the blacklist for the narrow `options for X` path.
 
-- [ ] **8. Doc ID collisions.** Names are reduced to `[a-z0-9]`, so "José" becomes `jos_`, non-Latin names collapse to underscores, and "Ana-Maria" and "Ana Maria" collide.
+- [x] **8. Doc ID collisions.** Names are reduced to `[a-z0-9]`, so "José" becomes `jos_`, non-Latin names collapse to underscores, and "Ana-Maria" and "Ana Maria" collide.
   **Fix:** use the auth `uid` as the doc ID and store the name as a field.
 
 - [ ] **9. Ghost and duplicate entries, and nobody is ever removed.** The scraper uses participant-list names while each student reports under their Google Account name; if they differ, one person gets two docs.
@@ -91,7 +91,7 @@ All fixes below fit one redesign:
 - [ ] **11. The instructor appears as a student** because their own content script also reports status.
   **Fix:** skip reporting when `uid === hostUid`.
 
-- [ ] **12. Quick End → Start loses students; pause/resume can leave stale status.** `lastReportedStatus` only resets if a client happens to poll during the brief "ended" state.
+- [x] **12. Quick End → Start loses students; pause/resume can leave stale status.** Client status can remain stale across a quick restart or pause/resume.
   **Fix:** give each run a `runId`. Clients reset `lastReportedStatus` whenever it changes, and on resume.
 
 - [ ] **13. Anything not "active" renders as Away.**
@@ -110,7 +110,7 @@ All fixes below fit one redesign:
 
 ## D. Security and privacy
 
-- [ ] **17. No authentication.** Google sign-in is wired into the popup, but the flow currently fails in Chrome and needs verification/fixing.
+- [x] **17. No authentication.** Chrome identity Google sign-in is wired into the popup and has been confirmed working.
   **Fix:** `chrome.identity` Google sign-in for the host, anonymous or Google sign-in for students. Add the `identity` permission to the manifest.
 
 - [x] **18. Open Firestore rules.** Rules are defined in `firestore.rules` and have been deployed to the `insession-d7332` Firebase project. Unauthenticated clients are denied; keep the project ID and API key treated as public configuration.
@@ -185,4 +185,4 @@ All fixes below fit one redesign:
 
 ## Progress
 
-34 issues total: 7 implementation items done. Firestore rules are deployed to `insession-d7332`; Google sign-in is still being fixed.
+34 issues total: 10 implementation items done. Firestore rules are deployed to `insession-d7332`, and Google sign-in is working.
