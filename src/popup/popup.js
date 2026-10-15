@@ -1,241 +1,226 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { 
-  getFirestore, 
-  collection, 
-  onSnapshot, 
-  doc, 
-  updateDoc,
-  setDoc,
-  getDocs,
-  deleteDoc
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { GoogleAuthProvider, onAuthStateChanged, signInWithCredential, signOut } from "firebase/auth/web-extension";
+import { collection, doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { auth, db } from "../shared/firebase.js";
 
-// --- FIREBASE CONFIG ---
-const firebaseConfig = {
-  apiKey: "AIzaSyDryYH8McIxJWq4I5HXF3TGm3wWkKpVUk",
-  authDomain: "insession-extension.firebaseapp.com",
-  projectId: "insession-extension",
-  storageBucket: "insession-extension.firebasestorage.app",
-  messagingSenderId: "855288159063",
-  appId: "1:855288159063:web:e1caa50cd74b91c1347c12",
-  measurementId: "G-TN7W1DCSQM"
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const studentsCol = collection(db, "students");
-const sessionDocRef = doc(db, "session", "current");
-
-// UI Elements
-const studentTableBody = document.getElementById("studentTableBody");
+const byId = (id) => document.getElementById(id);
+const studentTableBody = byId("studentTableBody");
 const attendeeCountEl = document.querySelector(".card-yellow .stat-number");
 const activeCountEl = document.querySelector(".card-green .stat-number");
 const awayCountEl = document.querySelector(".card-red .stat-number");
 const searchInput = document.querySelector(".search-input");
-
-// Action Buttons
+const hostControls = byId("host-controls");
+const signInButton = byId("sign-in");
+const signOutButton = byId("sign-out");
+const accountStatus = byId("account-status");
+const sessionNotice = byId("session-notice");
 const btnStart = document.querySelector(".btn-start");
 const btnPause = document.querySelector(".btn-pause");
 const btnEnd = document.querySelector(".btn-end");
+const filterBtn = byId("filter-btn");
+const filterDropdown = byId("filterDropdown");
+const currentFilterText = byId("currentFilterText");
+const menuItems = filterDropdown?.querySelectorAll("li") ?? [];
 
-// Filter Controls
-const filterBtn = document.getElementById("filter-btn");
-const filterDropdown = document.getElementById("filterDropdown");
-const currentFilterText = document.getElementById("currentFilterText");
-const menuItems = filterDropdown ? filterDropdown.querySelectorAll("li") : [];
-
+let user = null;
+let meetCode = null;
+let sessionData = null;
+let studentsData = [];
 let currentFilter = "all";
 let searchQuery = "";
-let studentsData = [];
-let sessionState = "idle"; // "idle" | "running" | "paused" | "ended"
+let stopSessionListener = null;
+let stopStudentsListener = null;
 
-// --- 1. SESSION STATE LISTENER ---
-onSnapshot(sessionDocRef, (snap) => {
-  if (snap.exists()) {
-    sessionState = snap.data().status || "idle";
-  } else {
-    sessionState = "idle";
-  }
-  updateButtonStyles();
-});
-
-function updateButtonStyles() {
-  if (sessionState === "running") {
-    btnStart.style.opacity = "0.4";
-    btnStart.style.pointerEvents = "none";
-    btnPause.style.opacity = "1";
-    btnPause.style.pointerEvents = "auto";
-    btnPause.textContent = "Pause";
-    btnEnd.style.opacity = "1";
-    btnEnd.style.pointerEvents = "auto";
-  } else if (sessionState === "paused") {
-    btnStart.style.opacity = "1";
-    btnStart.style.pointerEvents = "auto";
-    btnStart.textContent = "Resume";
-    btnPause.style.opacity = "0.4";
-    btnPause.style.pointerEvents = "none";
-    btnEnd.style.opacity = "1";
-    btnEnd.style.pointerEvents = "auto";
-  } else { // "idle" or "ended"
-    btnStart.style.opacity = "1";
-    btnStart.style.pointerEvents = "auto";
-    btnStart.textContent = "Start";
-    btnPause.style.opacity = "0.4";
-    btnPause.style.pointerEvents = "none";
-    btnEnd.style.opacity = "0.4";
-    btnEnd.style.pointerEvents = "none";
+function getMeetCode(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "meet.google.com") return null;
+    return parsed.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/i)?.[1] ?? null;
+  } catch {
+    return null;
   }
 }
 
-// Button Click Handlers
-btnStart.addEventListener("click", async () => {
-  await setDoc(sessionDocRef, {
-    status: "running",
-    startedAt: new Date().toISOString()
-  }, { merge: true });
-});
+function setNotice(message, isError = false) {
+  sessionNotice.hidden = !message;
+  sessionNotice.textContent = message;
+  sessionNotice.classList.toggle("error", isError);
+}
 
-btnPause.addEventListener("click", async () => {
-  await setDoc(sessionDocRef, {
-    status: "paused",
-    pausedAt: new Date().toISOString()
-  }, { merge: true });
-});
-
-btnEnd.addEventListener("click", async () => {
-  const confirmEnd = confirm("Are you sure you want to end this attendance session? This will clear all participant data.");
-  if (!confirmEnd) return;
-
-  btnEnd.disabled = true;
-
-  try {
-    // 1. Set session status to ended
-    await setDoc(sessionDocRef, {
-      status: "ended",
-      endedAt: new Date().toISOString()
-    }, { merge: true });
-
-    // 2. Fetch and delete all student documents
-    const snapshot = await getDocs(studentsCol);
-    const deletePromises = snapshot.docs.map((docSnap) => deleteDoc(docSnap.ref));
-    await Promise.all(deletePromises);
-
-    console.log("[InSession] Session ended and participant documents cleared.");
-  } catch (err) {
-    console.error("[InSession] Failed to clear documents on session end:", err);
-  } finally {
-    btnEnd.disabled = false;
+function updateControls() {
+  const isHost = Boolean(user && meetCode && (!sessionData || sessionData.hostUid === user.uid));
+  hostControls.hidden = !isHost;
+  if (!user) {
+    setNotice("Sign in with your instructor account to manage a session.");
+    return;
   }
-});
+  if (!meetCode) {
+    setNotice("Open this popup from an active Google Meet tab.");
+    return;
+  }
+  if (sessionData?.hostUid && sessionData.hostUid !== user.uid) {
+    setNotice("This session is managed by its host. Tracking is read-only here.");
+    return;
+  }
+  setNotice(sessionData?.status === "running" ? `Tracking is on for ${meetCode}.` : "You can start a session for this meeting.");
 
-// --- 2. STUDENTS LISTENER ---
-onSnapshot(studentsCol, (snapshot) => {
-  studentsData = [];
-  snapshot.forEach((docSnap) => {
-    studentsData.push({ id: docSnap.id, ...docSnap.data() });
-  });
-
-  studentsData.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-  renderUI();
-});
+  const status = sessionData?.status ?? "idle";
+  btnStart.disabled = status === "running";
+  btnStart.textContent = status === "paused" ? "Resume" : "Start";
+  btnPause.disabled = status !== "running";
+  btnEnd.disabled = !["running", "paused"].includes(status);
+}
 
 function renderUI() {
   const total = studentsData.length;
-  const activeCount = studentsData.filter(s => s.status === "active").length;
-  const awayCount = studentsData.filter(s => s.status === "away").length;
+  const activeCount = studentsData.filter((student) => student.status === "active").length;
+  const awayCount = studentsData.filter((student) => student.status === "away").length;
+  attendeeCountEl.textContent = String(total);
+  activeCountEl.textContent = `${activeCount}/${total}`;
+  awayCountEl.textContent = `${awayCount}/${total}`;
 
-  if (attendeeCountEl) attendeeCountEl.textContent = total;
-  if (activeCountEl) activeCountEl.textContent = `${activeCount}/${total}`;
-  if (awayCountEl) awayCountEl.textContent = `${awayCount}/${total}`;
-
-  const filtered = studentsData.filter((student) => {
-    const matchesFilter = currentFilter === "all" || student.status === currentFilter;
-    const matchesSearch = (student.name || "")
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-    return matchesFilter && matchesSearch;
-  });
-
-  if (!studentTableBody) return;
-  studentTableBody.innerHTML = "";
-
-  if (filtered.length === 0) {
-    studentTableBody.innerHTML = `
-      <tr>
-        <td colspan="2" style="text-align: center; padding: 24px; color: #888;">
-          No participants found.
-        </td>
-      </tr>
-    `;
+  const filtered = studentsData.filter((student) =>
+    (currentFilter === "all" || student.status === currentFilter)
+    && (student.name || "").toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  studentTableBody.replaceChildren();
+  if (!filtered.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 2;
+    cell.className = "empty-state";
+    cell.textContent = "No participants found.";
+    row.appendChild(cell);
+    studentTableBody.appendChild(row);
     return;
   }
 
-  filtered.forEach((student) => {
-    const tr = document.createElement("tr");
-    const isActive = student.status === "active";
-
-    tr.innerHTML = `
-      <td class="col-student">${student.name || "Unknown"}</td>
-      <td class="col-status">
-        <span class="status-badge ${isActive ? 'badge-active' : 'badge-away'}" 
-              style="cursor: pointer;" 
-              data-id="${student.id}" 
-              data-status="${student.status}">
-          <span class="badge-dot"></span> 
-          ${isActive ? 'Active' : 'Away'}
-        </span>
-      </td>
-    `;
-    studentTableBody.appendChild(tr);
-  });
+  for (const student of filtered) {
+    const row = document.createElement("tr");
+    const nameCell = document.createElement("td");
+    nameCell.className = "col-student";
+    nameCell.textContent = student.name || "Unknown";
+    const statusCell = document.createElement("td");
+    statusCell.className = "col-status";
+    const badge = document.createElement("span");
+    const active = student.status === "active";
+    badge.className = `status-badge ${active ? "badge-active" : "badge-away"}`;
+    const dot = document.createElement("span");
+    dot.className = "badge-dot";
+    badge.append(dot, document.createTextNode(active ? "Active" : "Away"));
+    statusCell.appendChild(badge);
+    row.append(nameCell, statusCell);
+    studentTableBody.appendChild(row);
+  }
 }
 
-// Manual Status Override
-if (studentTableBody) {
-  studentTableBody.addEventListener("click", async (e) => {
-    const badge = e.target.closest(".status-badge");
-    if (!badge) return;
-
-    const studentId = badge.getAttribute("data-id");
-    const currentStatus = badge.getAttribute("data-status");
-    const nextStatus = currentStatus === "active" ? "away" : "active";
-
-    const studentDocRef = doc(db, "students", studentId);
-    await updateDoc(studentDocRef, { status: nextStatus });
-  });
+function stopListeners() {
+  stopSessionListener?.();
+  stopStudentsListener?.();
+  stopSessionListener = null;
+  stopStudentsListener = null;
+  sessionData = null;
+  studentsData = [];
+  renderUI();
 }
 
-// Search
-if (searchInput) {
-  searchInput.addEventListener("input", (e) => {
-    searchQuery = e.target.value.trim();
-    renderUI();
-  });
-}
+function listenToMeeting() {
+  stopListeners();
+  if (!user || !meetCode) {
+    updateControls();
+    return;
+  }
+  const sessionRef = doc(db, "sessions", meetCode);
+  stopSessionListener = onSnapshot(sessionRef, (snapshot) => {
+    sessionData = snapshot.exists() ? snapshot.data() : null;
+    updateControls();
 
-// Dropdown
-if (filterBtn && filterDropdown) {
-  filterBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    filterDropdown.classList.toggle("show");
-  });
-
-  menuItems.forEach((item) => {
-    item.addEventListener("click", () => {
-      menuItems.forEach((li) => li.classList.remove("active"));
-      item.classList.add("active");
-
-      if (currentFilterText) currentFilterText.textContent = item.textContent;
-      currentFilter = item.getAttribute("data-value");
-
-      renderUI();
-      filterDropdown.classList.remove("show");
-    });
-  });
-
-  document.addEventListener("click", (e) => {
-    if (!filterDropdown.contains(e.target) && !filterBtn.contains(e.target)) {
-      filterDropdown.classList.remove("show");
+    stopStudentsListener?.();
+    stopStudentsListener = null;
+    studentsData = [];
+    if (sessionData?.hostUid === user.uid) {
+      stopStudentsListener = onSnapshot(collection(sessionRef, "students"), (students) => {
+        studentsData = students.docs.map((student) => ({ id: student.id, ...student.data() }));
+        studentsData.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        renderUI();
+      }, (error) => setNotice(`Could not read attendees: ${error.message}`, true));
     }
-  });
+    renderUI();
+  }, (error) => setNotice(`Could not read meeting session: ${error.message}`, true));
 }
+
+signInButton.addEventListener("click", async () => {
+  signInButton.disabled = true;
+  try {
+    const result = await chrome.identity.getAuthToken({ interactive: true });
+    const credential = GoogleAuthProvider.credential(null, result.token);
+    await signInWithCredential(auth, credential);
+  } catch (error) {
+    setNotice(`Sign in failed: ${error.message}`, true);
+  } finally {
+    signInButton.disabled = false;
+  }
+});
+
+signOutButton.addEventListener("click", async () => {
+  try {
+    await signOut(auth);
+    await chrome.storage.local.remove("hostUid");
+  } catch (error) { setNotice(error.message, true); }
+});
+
+btnStart.addEventListener("click", async () => {
+  if (!user || !meetCode) return;
+  try {
+    const sessionRef = doc(db, "sessions", meetCode);
+    if (!sessionData) {
+      await setDoc(sessionRef, { meetCode, hostUid: user.uid, status: "running", startedAt: serverTimestamp() });
+    } else if (sessionData.hostUid === user.uid) {
+      await updateDoc(sessionRef, { status: "running", resumedAt: serverTimestamp() });
+    }
+  } catch (error) {
+    setNotice(`Could not start tracking: ${error.message}`, true);
+  }
+});
+
+btnPause.addEventListener("click", async () => {
+  if (!sessionData || sessionData.hostUid !== user?.uid) return;
+  try { await updateDoc(doc(db, "sessions", meetCode), { status: "paused", pausedAt: serverTimestamp() }); }
+  catch (error) { setNotice(`Could not pause tracking: ${error.message}`, true); }
+});
+
+btnEnd.addEventListener("click", async () => {
+  if (!sessionData || sessionData.hostUid !== user?.uid || !confirm("End tracking for this meeting?")) return;
+  try { await updateDoc(doc(db, "sessions", meetCode), { status: "ended", endedAt: serverTimestamp() }); }
+  catch (error) { setNotice(`Could not end tracking: ${error.message}`, true); }
+});
+
+searchInput.addEventListener("input", (event) => { searchQuery = event.target.value.trim(); renderUI(); });
+filterBtn.addEventListener("click", (event) => { event.stopPropagation(); filterDropdown.classList.toggle("show"); });
+menuItems.forEach((item) => item.addEventListener("click", () => {
+  menuItems.forEach((entry) => entry.classList.remove("active"));
+  item.classList.add("active");
+  currentFilter = item.dataset.value;
+  currentFilterText.textContent = item.textContent;
+  filterDropdown.classList.remove("show");
+  renderUI();
+}));
+document.addEventListener("click", (event) => {
+  if (!filterDropdown.contains(event.target) && !filterBtn.contains(event.target)) filterDropdown.classList.remove("show");
+});
+
+chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+  meetCode = getMeetCode(tab?.url);
+  updateControls();
+  if (user) listenToMeeting();
+});
+
+onAuthStateChanged(auth, (signedInUser) => {
+  user = signedInUser;
+  if (user) chrome.storage.local.set({ hostUid: user.uid });
+  else chrome.storage.local.remove("hostUid");
+  accountStatus.textContent = user ? `Signed in as ${user.displayName || user.email || "Google account"}` : "Sign in to manage a session";
+  signInButton.hidden = Boolean(user);
+  signOutButton.hidden = !user;
+  listenToMeeting();
+  updateControls();
+});
