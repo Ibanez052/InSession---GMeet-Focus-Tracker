@@ -142,8 +142,8 @@ All fixes below fit one redesign:
 - [ ] **21. Firebase API key is public in the repo.**
   **Fix:** treat it as public. Protection comes from the rules (and optionally App Check), not from hiding the key.
 
-- [ ] **22. No consent or notice.** Participants are tracked silently.
-  **Fix:** show a small banner on Meet while tracking is active, track only while a session is running, add a short privacy note, and define retention and deletion.
+- [ ] **22. Participant privacy notice and retention.** A notice now appears on the Meet page while a non-host's session is running. It explains which status data is shared, that only the Meet tab is monitored, and that session data currently has no automatic deletion. Tracking remains limited to a running session. The retention duration and deletion process still need a product decision before this item is complete.
+  **Remaining:** choose a retention period and implement/document the corresponding deletion behavior.
 
 - [ ] **23. Clients can be spoofed or disabled.** Rules stop students writing as someone else, but a determined student can still disable the extension.
   **Fix:** treat "no signal" as its own flag rather than "present".
