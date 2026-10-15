@@ -13,7 +13,7 @@ npm ci
 npm run build
 ```
 
-Load the generated `dist/` directory in `chrome://extensions` using **Load unpacked**.
+For local development, keep the extension loaded from the repository root (the folder containing the top-level `manifest.json`). The root manifest points Chrome at the bundled popup and content script in `dist/`, so rebuilding does not change the extension ID used by OAuth. The generated `dist/` folder also contains a standalone manifest for packaging; loading that folder separately creates a different unpacked-extension ID unless a stable manifest key is configured.
 
 Before signing in or tracking participants:
 
@@ -110,7 +110,7 @@ All fixes below fit one redesign:
 
 ## D. Security and privacy
 
-- [x] **17. No authentication.** Neither `content.js` nor `popup.js` signs in.
+- [ ] **17. No authentication.** Google sign-in is wired into the popup, but the flow currently fails in Chrome and needs verification/fixing.
   **Fix:** `chrome.identity` Google sign-in for the host, anonymous or Google sign-in for students. Add the `identity` permission to the manifest.
 
 - [x] **18. Open Firestore rules.** Rules are defined in `firestore.rules` and have been deployed to the `insession-d7332` Firebase project. Unauthenticated clients are denied; keep the project ID and API key treated as public configuration.
@@ -185,4 +185,4 @@ All fixes below fit one redesign:
 
 ## Progress
 
-34 issues total: 8 implementation items done. Firestore rules are deployed to `insession-d7332`.
+34 issues total: 7 implementation items done. Firestore rules are deployed to `insession-d7332`; Google sign-in is still being fixed.

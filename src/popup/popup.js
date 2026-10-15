@@ -30,6 +30,27 @@ let searchQuery = "";
 let stopSessionListener = null;
 let stopStudentsListener = null;
 
+function getGoogleAccessToken() {
+  return new Promise((resolve, reject) => {
+    chrome.identity.getAuthToken({ interactive: true }, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+
+      // Chrome 105+ returns an object; older callback implementations return
+      // the token string directly.
+      const token = typeof result === "string" ? result : result?.token;
+      if (!token) {
+        reject(new Error("Chrome did not return a Google access token. Check the extension OAuth client and extension ID."));
+        return;
+      }
+      resolve(token);
+    });
+  });
+}
+
 function getMeetCode(url) {
   try {
     const parsed = new URL(url);
@@ -150,12 +171,14 @@ function listenToMeeting() {
 
 signInButton.addEventListener("click", async () => {
   signInButton.disabled = true;
+  setNotice("Opening Google sign-in…");
   try {
-    const result = await chrome.identity.getAuthToken({ interactive: true });
-    const credential = GoogleAuthProvider.credential(null, result.token);
+    const token = await getGoogleAccessToken();
+    const credential = GoogleAuthProvider.credential(null, token);
     await signInWithCredential(auth, credential);
   } catch (error) {
-    setNotice(`Sign in failed: ${error.message}`, true);
+    console.error("[InSession] Google sign-in failed:", error);
+    setNotice(`Sign in failed: ${error.message || "Check the extension OAuth setup and try again."}`, true);
   } finally {
     signInButton.disabled = false;
   }
