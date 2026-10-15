@@ -16,6 +16,7 @@ let meetingContextTimer = null;
 let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
+let privacyNoticeHost = null;
 
 function readMeetCode() {
   if (location.hostname !== "meet.google.com") return null;
@@ -50,6 +51,46 @@ function findMyName() {
   return isCleanName(text) ? text : auth.currentUser?.displayName || null;
 }
 
+function removeTrackingNotice() {
+  privacyNoticeHost?.remove();
+  privacyNoticeHost = null;
+}
+
+function renderTrackingNotice() {
+  const isHost = Boolean(session?.hostUid && (session.hostUid === currentUid || session.hostUid === storedHostUid));
+  if (!meetingActive || session?.status !== "running" || !currentUid || isHost) {
+    removeTrackingNotice();
+    return;
+  }
+
+  if (!privacyNoticeHost?.isConnected) {
+    privacyNoticeHost = document.createElement("div");
+    privacyNoticeHost.id = "insession-tracking-notice";
+    privacyNoticeHost.setAttribute("aria-label", "InSession attendance tracking notice");
+    const shadow = privacyNoticeHost.attachShadow({ mode: "closed" });
+    shadow.innerHTML = `
+      <style>
+        :host { all: initial; position: fixed; z-index: 2147483647; top: 12px; left: 50%; transform: translateX(-50%); width: min(430px, calc(100vw - 28px)); color: #17324d; font: 13px/1.45 Arial, sans-serif; }
+        .notice { box-sizing: border-box; padding: 10px 14px; border: 1px solid #cbd9e5; border-radius: 10px; background: #fff; box-shadow: 0 3px 14px #102a4330; }
+        .heading { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+        .dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #d28a20; }
+        details { margin-top: 5px; }
+        summary { width: fit-content; color: #315c7d; cursor: pointer; font-size: 12px; }
+        p { margin: 6px 0 0; }
+        @media (prefers-reduced-motion: no-preference) { .notice { animation: enter 180ms ease-out; } @keyframes enter { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } } }
+      </style>
+      <section class="notice" role="status" aria-live="polite">
+        <div class="heading"><span class="dot" aria-hidden="true"></span><span>InSession attendance tracking is on</span></div>
+        <details>
+          <summary>What is shared?</summary>
+          <p>The session host can see your Meet display name, whether this Meet tab is Active or Away, and when your status was last updated. InSession checks this Meet tab only; it does not read your audio or video.</p>
+          <p>Tracking runs only while the host's session is running. Session records remain in the project's Firebase database after tracking ends; automatic deletion is not configured.</p>
+        </details>
+      </section>`;
+    (document.body || document.documentElement).appendChild(privacyNoticeHost);
+  }
+}
+
 function listenForSession() {
   stopSessionListener?.();
   stopSessionListener = null;
@@ -61,6 +102,7 @@ function listenForSession() {
     clearTimeout(awayTimer);
     awayTimer = null;
   }
+  renderTrackingNotice();
   if (!meetCode || !currentUid || !meetingActive) return;
   stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
     session = snapshot.exists() ? snapshot.data() : null;
@@ -70,6 +112,7 @@ function listenForSession() {
       lastStatus = null;
       lastHeartbeatAt = 0;
     }
+    renderTrackingNotice();
     if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
       lastStatus = null;
       return;
@@ -155,11 +198,13 @@ onAuthStateChanged(auth, async (user) => {
 
 chrome.storage.local.get("hostUid", ({ hostUid }) => {
   storedHostUid = hostUid ?? null;
+  renderTrackingNotice();
   if (session?.status === "running" && session.hostUid === storedHostUid) lastStatus = null;
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes.hostUid) return;
   storedHostUid = changes.hostUid.newValue ?? null;
+  renderTrackingNotice();
   if (session?.hostUid === storedHostUid) lastStatus = null;
 });
 
