@@ -9,7 +9,7 @@
     "scopes": ["openid", "email", "profile"]
   },
   "action": {
-    "default_popup": "src/popup/popup.html",
+    "default_popup": "dist/src/popup/popup.html",
     "default_icon": "assets/logo.png"
   },
   "host_permissions": [
@@ -19,7 +19,7 @@
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
-      "js": ["src/content/content.js"],
+      "js": ["dist/src/content/content.js"],
       "run_at": "document_idle"
     }
   ]
