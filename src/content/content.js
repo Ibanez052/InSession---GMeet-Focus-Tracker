@@ -13,6 +13,7 @@ let storedHostUid = null;
 let stopSessionListener = null;
 let meetingActive = false;
 let meetingContextTimer = null;
+let leaveConfirmationTimer = null;
 let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
@@ -171,6 +172,32 @@ function syncMeetingContext() {
   const nextCode = readMeetCode();
   const nextMeetingActive = Boolean(nextCode && isInMeeting());
   if (nextCode === meetCode && nextMeetingActive === meetingActive) return;
+  if (leaveConfirmationTimer !== null && (nextMeetingActive || nextCode !== meetCode)) {
+    clearTimeout(leaveConfirmationTimer);
+    leaveConfirmationTimer = null;
+  }
+  if (meetingActive && nextCode === meetCode && !nextMeetingActive) {
+    if (leaveConfirmationTimer === null) {
+      const leavingCode = meetCode;
+      leaveConfirmationTimer = setTimeout(() => {
+        leaveConfirmationTimer = null;
+        if (meetCode !== leavingCode || isInMeeting()) {
+          scheduleMeetingContextCheck();
+          return;
+        }
+        void reportStatus(true, "left");
+        meetingActive = false;
+        listenForSession();
+      }, 1000);
+    }
+    return;
+  }
+  if (meetingActive && nextCode !== meetCode) {
+    // Send the final status while the previous meeting code and session are
+    // still available. The stale-status timeout remains a fallback if this
+    // write is interrupted by a closed browser or lost connection.
+    void reportStatus(true, "left");
+  }
   if (nextCode !== meetCode) currentName = null;
   meetCode = nextCode;
   meetingActive = nextMeetingActive;
