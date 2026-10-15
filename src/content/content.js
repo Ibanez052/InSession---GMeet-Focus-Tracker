@@ -5,6 +5,7 @@ import { auth, db } from "../shared/firebase.js";
 const NAME_BLACKLIST = new Set(["people", "chat", "activities", "host controls", "mute", "leave call", "more options"]);
 let meetCode = null;
 let session = null;
+let currentRunId = null;
 let currentUid = null;
 let currentName = null;
 let storedHostUid = null;
@@ -45,6 +46,12 @@ function listenForSession() {
   if (!meetCode || !currentUid) return;
   stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
     session = snapshot.exists() ? snapshot.data() : null;
+    const nextRunId = session?.runId ?? null;
+    if (nextRunId !== currentRunId) {
+      currentRunId = nextRunId;
+      lastStatus = null;
+      lastHeartbeatAt = 0;
+    }
     if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
       lastStatus = null;
       return;
