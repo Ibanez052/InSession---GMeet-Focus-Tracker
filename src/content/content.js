@@ -4,7 +4,18 @@ import { auth, db } from "../shared/firebase.js";
 
 const MEET_UI = Object.freeze({
   leaveControls: 'button[aria-label], [role="button"][aria-label]',
-  leaveLabels: [/^leave call$/i, /^leave meeting$/i],
+  leaveLabels: Object.freeze({
+    en: [/^leave call$/i, /^leave meeting$/i],
+    de: [/^anruf verlassen$/i, /^meeting verlassen$/i],
+    es: [/^salir de la llamada$/i, /^salir de la reunión$/i],
+    fil: [/^umalis sa tawag$/i],
+    fr: [/^quitter l'appel$/i, /^quitter la réunion$/i],
+    it: [/^abbandona la chiamata$/i, /^esci dalla riunione$/i],
+    ja: [/^通話から退出$/i, /^会議から退出$/i],
+    ko: [/^통화 나가기$/i, /^회의 나가기$/i],
+    pt: [/^sair da chamada$/i, /^sair da reunião$/i],
+    zh: [/^退出通话$/, /^退出会议$/]
+  }),
   hostControls: 'button[aria-label], button[title], button[data-tooltip], [role="button"][aria-label], [role="button"][title], [role="button"][data-tooltip]',
   hostControlLabel: /\b(?:host controls?|meeting controls?|host management|meeting safety)\b/i,
   googleAccount: '[aria-label*="Google Account:" i]',
@@ -63,9 +74,11 @@ function readMeetCode() {
 
 function isInMeeting() {
   if (!meetCode) return false;
+  const language = (document.documentElement.lang || navigator.language || "en").toLowerCase().split("-")[0];
+  const labels = MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en;
   const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
     const label = control.getAttribute("aria-label")?.trim() ?? "";
-    return MEET_UI.leaveLabels.some((pattern) => pattern.test(label));
+    return labels.some((pattern) => pattern.test(label));
   });
   return Boolean(leaveControl);
 }
