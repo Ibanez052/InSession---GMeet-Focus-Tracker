@@ -58,7 +58,7 @@ function getParticipantRoster() {
   for (const row of document.querySelectorAll(MEET_UI.participantRows)) {
     if (MEET_UI.youLabel.test(row.textContent || "")) continue;
     const textRow = row.cloneNode(true);
-    textRow.querySelectorAll('button, [role="button"], [aria-label], [data-tooltip], [title]')
+    textRow.querySelectorAll('button, [role="button"]')
       .forEach((control) => control.remove());
     const text = (textRow.innerText || textRow.textContent || "")
       .replace(/\bYou can't unmute someone else\b/gi, " ")
