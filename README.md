@@ -97,7 +97,7 @@ All fixes below fit one redesign:
 
 ## C. Fragile Meet scraping
 
-- [ ] **15. Meet detection depends on localized UI labels.** Meeting detection now requires a valid Meet-code URL and an exact leave-action label; broad `*="call"` matching is gone, and Meet UI selectors are kept together in `MEET_UI`. The accessible leave-action label is still English-only, so localized Meet interfaces need follow-up support.
+- [x] **15. Meet detection depends on localized UI labels.** Meeting detection uses the Meet-code URL and the exact accessible leave-action label for English, German, Spanish, Filipino, French, Italian, Japanese, Korean, Portuguese, and Chinese interfaces. Other locales currently fall back to English; Meet UI selectors and labels are kept together in `MEET_UI`.
 
 - [x] **16. Tracking loops run outside meetings.** Participant heartbeats now start only while a meeting is active and its session is running, and stop when either condition ends. Identity lookup happens only when a status report is due; the popup uses tab activation/update events instead of polling the active tab.
 
@@ -137,8 +137,7 @@ All fixes below fit one redesign:
 
 - [x] **22. Participant privacy notice and retention.** The notice explains the data shared and the cleanup flow. The host downloads attendance when ending the session; Firestore records are deleted only after Chrome confirms the CSV download. If the download fails or is canceled, the ended session remains available for retry.
 
-- [ ] **23. Clients can be spoofed or disabled.** Rules stop students writing as someone else, but a determined student can still disable the extension.
-  **Fix:** treat "no signal" as its own flag rather than "present".
+- [x] **23. Clients can be spoofed or disabled.** Firestore rules require participant writes to use that participant's authenticated UID. Missing or stale heartbeats display as **Not reporting**, rather than Active or Away. A user can still disable or modify their own extension; client self-reporting cannot prove attendance or enforce that the extension remains enabled.
 
 ## E. Features and UX
 
@@ -159,16 +158,15 @@ All fixes below fit one redesign:
 - [x] **30. Accessibility and wording.** The filter uses a native keyboard-accessible `<select>` with a CSS chevron; search and filter controls have accessible labels, Away wording is consistent, and decorative icons have empty alt text.
   **Fix:** use "Away" everywhere, a CSS chevron, `aria-label` on the search box, a proper dropdown role or a `<select>`, and `alt=""` on decorative icons.
 
-- [ ] **31. CSS cleanup.** Unused `.brand-logo svg` and `.brand-text` rules, a duplicate `padding-left`, and inline styles in the HTML and JS.
-  **Fix:** remove dead rules and move inline styles into classes.
+- [x] **31. CSS cleanup.** The listed dead brand selectors and duplicate declaration are absent. The initial table placeholder style now uses `.table-loading-cell` in the stylesheet.
 
 ## F. Repo and manifest
 
 - [x] **32. GitHub is behind the local copy.** The action and side-panel manifest changes are merged into `main`.
 
-- [ ] **33. Documentation.** This README covers Firebase setup, rules deployment, and the build/unpacked-extension workflow. A project LICENSE is still needed.
+- [x] **33. Documentation.** This README covers Firebase setup, rules deployment, and the build/unpacked-extension workflow. The project uses the MIT License.
 
-- [ ] **34. Manifest icons.** The name, identity/downloads permissions, action entry, side panel, and background service worker are present. Add standard 16/48/128 extension icons and declare them in the manifest.
+- [x] **34. Manifest icons.** The action and extension manifest declare 16, 48, and 128 pixel icons derived from the InSession logo.
 
 ---
 
