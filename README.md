@@ -142,8 +142,7 @@ All fixes below fit one redesign:
 
 ## E. Features and UX
 
-- [ ] **24. Silent `catch {}` blocks.** Failures (quota, rule denials, network) are invisible.
-  **Fix:** log errors, show an error state with retry in the popup, and set a badge on the extension icon.
+- [x] **24. Silent failures.** Firebase session/attendee listener errors, participant authentication and status-write failures, host actions, and cleanup errors are logged and shown in the side panel. Recoverable connection and action errors have a retry control, and the extension action shows a red `!` badge until its reported error source succeeds or is retried.
 
 - [x] **25. Ending a session deletes everything.** Ending now exports a CSV with each participant's final status and estimated active/away time, then deletes session and attendee records from Firestore after the download completes. Durations are heartbeat-based estimates, not exact timers. The downloaded CSV is the host's attendance record; InSession does not keep server-side session history. Participants need the updated extension for duration estimates; older clients still appear in the export, but their duration values are marked unavailable.
 

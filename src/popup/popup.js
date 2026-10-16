@@ -17,6 +17,8 @@ const hostDashboard = byId("host-dashboard");
 const participantView = byId("participant-view");
 const participantHeading = byId("participant-heading");
 const participantMessage = byId("participant-message");
+const retryParticipantErrorButton = byId("retry-participant-error");
+const retrySessionErrorButton = byId("retry-session-error");
 const refreshHostDetectionButton = byId("refresh-host-detection");
 const btnStart = document.querySelector(".btn-start");
 const btnPause = document.querySelector(".btn-pause");
@@ -28,6 +30,9 @@ let user = null;
 let meetCode = null;
 let hostControlsVisible = false;
 let hostDetectionRequestId = 0;
+let popupErrorMessage = "";
+let popupErrorSource = "";
+let popupErrorRetry = null;
 let sessionData = null;
 let studentsData = [];
 let currentFilter = "all";
@@ -73,20 +78,116 @@ function getMeetCode(url) {
 }
 
 function setNotice(message, isError = false) {
+  if (popupErrorMessage && !isError) {
+    renderPopupError();
+    return;
+  }
   sessionNotice.hidden = !message;
   sessionNotice.textContent = message;
   sessionNotice.classList.toggle("error", isError);
 }
 
 function setParticipantNotice(heading, message) {
+  if (popupErrorMessage) {
+    renderPopupError();
+    return;
+  }
   participantHeading.textContent = heading;
   participantMessage.textContent = message;
 }
 
-function showSessionError(message) {
-  if (isGoogleAccount(user)) setNotice(message, true);
-  else setParticipantNotice("Could not connect to the session", message);
+function notifyBackgroundError(type, source, message = "") {
+  chrome.runtime.sendMessage({ type, source, message }, () => { void chrome.runtime.lastError; });
 }
+
+function renderPopupError() {
+  if (!popupErrorMessage) return;
+  if (!hostDashboard.hidden) {
+    sessionNotice.hidden = false;
+    sessionNotice.textContent = popupErrorMessage;
+    sessionNotice.classList.add("error");
+    retrySessionErrorButton.hidden = !popupErrorRetry;
+    retryParticipantErrorButton.hidden = true;
+  } else {
+    participantHeading.textContent = "Something needs attention";
+    participantMessage.textContent = popupErrorMessage;
+    retryParticipantErrorButton.hidden = !popupErrorRetry;
+    retrySessionErrorButton.hidden = true;
+  }
+}
+
+function showPopupError(message, source, retry = null) {
+  popupErrorMessage = message;
+  popupErrorSource = source;
+  popupErrorRetry = retry;
+  notifyBackgroundError("in-session:report-error", source, message);
+  renderPopupError();
+}
+
+function clearPopupError(source = popupErrorSource) {
+  if (!source) return;
+  notifyBackgroundError("in-session:clear-error", source);
+  if (source !== popupErrorSource) return;
+  popupErrorMessage = "";
+  popupErrorSource = "";
+  popupErrorRetry = null;
+  retrySessionErrorButton.hidden = true;
+  retryParticipantErrorButton.hidden = true;
+  sessionNotice.classList.remove("error");
+  updateControls();
+}
+
+function showSessionError(message) {
+  showPopupError(message, "session-read", listenToMeeting);
+}
+
+function retryContentAction(action) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      if (!tab || getMeetCode(tab.url) !== meetCode) {
+        reject(new Error("Open the affected Google Meet tab and retry."));
+        return;
+      }
+      chrome.tabs.sendMessage(tab.id, { type: "in-session:retry", action }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error("Reload the Meet tab, then retry."));
+          return;
+        }
+        if (!response?.ok) {
+          reject(new Error(response?.message || "The retry did not complete."));
+          return;
+        }
+        resolve();
+      });
+    });
+  });
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "in-session:report-error") {
+    const retry = message.retryAction ? () => retryContentAction(message.retryAction) : null;
+    showPopupError(message.message || "Attendance tracking needs attention.", message.source || "unknown", retry);
+  } else if (message?.type === "in-session:clear-error") {
+    clearPopupError(message.source || "unknown");
+  }
+});
+
+chrome.runtime.sendMessage({ type: "in-session:get-errors" }, (errors) => {
+  if (chrome.runtime.lastError || popupErrorMessage || !errors) return;
+  const [source, message] = Object.entries(errors).at(-1) ?? [];
+  if (!source) return;
+  const contentRetry = ({
+    "participant-status": "status",
+    "participant-session": "session",
+    "participant-auth": "auth"
+  })[source];
+  const retry = contentRetry ? () => retryContentAction(contentRetry)
+    : ["session-read", "attendees-read", "host-record-cleanup"].includes(source) ? listenToMeeting
+      : source === "google-auth" ? () => signInButton.click()
+        : source === "sign-out" ? () => signOut(auth)
+          : null;
+  showPopupError(message, source, retry);
+});
 
 function toMillis(value) {
   return typeof value?.toMillis === "function" ? value.toMillis()
@@ -241,7 +342,10 @@ function ensureParticipantAuth() {
   anonymousAuthPromise = signInAnonymously(auth)
     .catch((error) => {
       console.error("[InSession] Anonymous participant sign-in failed:", error);
-      setParticipantNotice("Participant tracking unavailable", "Could not connect to attendance tracking. Ask the instructor to check the extension setup.");
+      showPopupError("Could not connect to attendance tracking. Check the connection and retry.", "participant-auth", async () => {
+        await ensureParticipantAuth();
+        if (!auth.currentUser) throw new Error("Anonymous sign-in did not complete.");
+      });
     })
     .finally(() => { anonymousAuthPromise = null; });
   return anonymousAuthPromise;
@@ -347,6 +451,7 @@ function updateControls() {
 
 async function runSessionAction(button, pendingLabel, action, errorLabel) {
   if (pendingAction) return;
+  clearPopupError();
   pendingAction = button;
   pendingActionLabel = pendingLabel;
   [btnStart, btnPause, btnEnd, btnDownloadAttendance].forEach((control) => {
@@ -367,9 +472,39 @@ async function runSessionAction(button, pendingLabel, action, errorLabel) {
     [btnStart, btnPause, btnEnd, btnDownloadAttendance].forEach((control) => control.removeAttribute("aria-busy"));
     updateControls();
   }
-  if (failureNotice) setNotice(failureNotice, true);
+  if (failureNotice) showPopupError(failureNotice, "session-action",
+    () => runSessionAction(button, pendingLabel, action, errorLabel));
+  else clearPopupError("session-action");
   return succeeded;
 }
+
+async function retryPopupError() {
+  if (!popupErrorRetry) return;
+  const retry = popupErrorRetry;
+  const source = popupErrorSource;
+  const buttons = [retrySessionErrorButton, retryParticipantErrorButton];
+  for (const button of buttons) {
+    if (!button.hidden) {
+      button.disabled = true;
+      button.textContent = "Retrying…";
+    }
+  }
+  try {
+    const retryResult = await retry();
+    if (retryResult === false) return;
+    clearPopupError(source);
+  } catch (error) {
+    showPopupError(`Retry failed: ${error.message || "Please try again."}`, source, retry);
+  } finally {
+    for (const button of buttons) {
+      button.disabled = false;
+      button.textContent = "Retry connection";
+    }
+  }
+}
+
+retrySessionErrorButton.addEventListener("click", retryPopupError);
+retryParticipantErrorButton.addEventListener("click", retryPopupError);
 
 function renderUI() {
   scheduleStalenessRefresh();
@@ -443,6 +578,7 @@ function listenToMeeting() {
   }
   const sessionRef = doc(db, "sessions", meetCode);
   stopSessionListener = onSnapshot(sessionRef, (snapshot) => {
+    clearPopupError("session-read");
     sessionData = snapshot.exists() ? snapshot.data() : null;
     updateControls();
 
@@ -451,13 +587,17 @@ function listenToMeeting() {
     studentsData = [];
     if (isGoogleAccount(user) && sessionData?.hostUid === user.uid) {
       stopStudentsListener = onSnapshot(collection(sessionRef, "students"), (students) => {
+        clearPopupError("attendees-read");
         const hostRecord = students.docs.find((student) =>
           student.id === sessionData.hostUid || student.data().uid === sessionData.hostUid
         );
         if (hostRecord) {
-          void deleteDoc(doc(sessionRef, "students", hostRecord.id)).catch((error) => {
-            console.error("[InSession] Could not remove the host from the attendee list:", error);
-          });
+          void deleteDoc(doc(sessionRef, "students", hostRecord.id))
+            .then(() => clearPopupError("host-record-cleanup"))
+            .catch((error) => {
+              console.error("[InSession] Could not remove the host from the attendee list:", error);
+              showPopupError(`Could not remove the host from the attendee list: ${error.message}`, "host-record-cleanup", listenToMeeting);
+            });
         }
         studentsData = students.docs
           .filter((student) => student.id !== sessionData.hostUid && student.data().uid !== sessionData.hostUid)
@@ -465,13 +605,14 @@ function listenToMeeting() {
           .map((student) => ({ id: student.id, ...student.data() }));
         studentsData.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         renderUI();
-      }, (error) => setNotice(`Could not read attendees: ${error.message}`, true));
+      }, (error) => showPopupError(`Could not read attendees: ${error.message}`, "attendees-read", listenToMeeting));
     }
     renderUI();
   }, (error) => showSessionError(`Could not read meeting session: ${error.message}`));
 }
 
 signInButton.addEventListener("click", async () => {
+  clearPopupError();
   const originalLabel = signInButton.textContent;
   signInButton.disabled = true;
   signInButton.textContent = "Signing in…";
@@ -490,11 +631,11 @@ signInButton.addEventListener("click", async () => {
     } else {
       await signInWithCredential(auth, credential);
     }
+    clearPopupError("google-auth");
   } catch (error) {
     console.error("[InSession] Google sign-in failed:", error);
     const message = error.message || "Check the extension OAuth setup and try again.";
-    if (isGoogleAccount(user)) setNotice(`Sign in failed: ${message}`, true);
-    else setParticipantNotice("Instructor sign-in failed", message);
+    showPopupError(`Sign in failed: ${message}`, "google-auth", () => signInButton.click());
   } finally {
     signInButton.disabled = false;
     signInButton.textContent = originalLabel;
@@ -502,11 +643,15 @@ signInButton.addEventListener("click", async () => {
 });
 
 signOutButton.addEventListener("click", async () => {
+  clearPopupError();
   signOutButton.disabled = true;
   signOutButton.textContent = "Signing out…";
   try {
     await signOut(auth);
-  } catch (error) { setNotice(error.message, true); }
+    clearPopupError("sign-out");
+  } catch (error) {
+    showPopupError(error.message, "sign-out", () => signOut(auth));
+  }
   finally {
     signOutButton.disabled = false;
     signOutButton.textContent = "Sign out";
@@ -637,6 +782,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 onAuthStateChanged(auth, (signedInUser) => {
   user = signedInUser;
+  if (user) clearPopupError("participant-auth");
   if (isGoogleAccount(user)) chrome.storage.local.set({ hostUid: user.uid });
   listenToMeeting();
   updateControls();

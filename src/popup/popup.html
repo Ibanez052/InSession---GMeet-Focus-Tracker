@@ -28,6 +28,7 @@
         <span class="participant-mark" aria-hidden="true">✓</span>
         <h1 id="participant-heading">Connecting to your meeting…</h1>
         <p id="participant-message">Your attendance status is reported automatically while the instructor's session is running.</p>
+        <button type="button" id="retry-participant-error" class="refresh-role-btn" hidden>Retry connection</button>
         <button type="button" id="refresh-host-detection" class="refresh-role-btn" hidden>Refresh host detection</button>
       </section>
 
@@ -59,6 +60,7 @@
             <button type="button" id="download-attendance" class="btn btn-download" hidden>Download CSV &amp; delete data</button>
           </div>
           <p id="session-notice" role="status" hidden></p>
+          <button type="button" id="retry-session-error" class="btn btn-pause" hidden>Retry connection</button>
 
           <div class="filter-tools">
             <div class="search-wrapper">

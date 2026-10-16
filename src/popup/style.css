@@ -18,6 +18,7 @@
       line-height: 1.4;
     }
     #session-notice.error { color: #a4313b; border-color: #f2d3d5; background: #fff7f7; }
+    #retry-session-error { align-self: flex-start; }
     .empty-state { text-align: center; padding: 24px; color: #666; }
 
     html,

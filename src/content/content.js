@@ -38,6 +38,24 @@ let lastHeartbeatAt = 0;
 let awayTimer = null;
 let privacyNoticeHost = null;
 
+function reportExtensionError(source, error, retryAction = null) {
+  const message = error?.message || String(error || "Unknown error");
+  console.error(`[InSession] ${source} failed:`, error);
+  try {
+    chrome.runtime.sendMessage({ type: "in-session:report-error", source, message, retryAction }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (sendError) { console.warn("[InSession] Could not report the error to the extension:", sendError); }
+}
+
+function clearExtensionError(source) {
+  try {
+    chrome.runtime.sendMessage({ type: "in-session:clear-error", source }, () => {
+      void chrome.runtime.lastError;
+    });
+  } catch (error) { console.warn("[InSession] Could not clear the extension error badge:", error); }
+}
+
 function readMeetCode() {
   if (location.hostname !== "meet.google.com") return null;
   return location.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/i)?.[1] ?? null;
@@ -135,6 +153,7 @@ function listenForSession() {
   renderTrackingNotice();
   if (!meetCode || !currentUid || !meetingActive) return;
   stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
+    clearExtensionError("participant-session");
     session = snapshot.exists() ? snapshot.data() : null;
     const nextRunId = session?.runId ?? null;
     if (nextRunId !== currentRunId) {
@@ -163,7 +182,7 @@ function listenForSession() {
       heartbeatTimer = setInterval(() => scheduleStatusReport(true), HEARTBEAT_MS);
     }
     scheduleStatusReport();
-  }, (error) => console.error("[InSession] Session listener failed:", error));
+  }, (error) => reportExtensionError("participant-session", error, "session"));
 }
 
 function getCurrentStatus() {
@@ -226,21 +245,27 @@ async function ensureDurationState(now) {
 
 function reportStatus(forceHeartbeat = false, statusOverride = null) {
   const report = statusWriteQueue.then(() => writeStatus(forceHeartbeat, statusOverride));
-  statusWriteQueue = report.catch((error) => console.error("[InSession] Status report failed:", error));
-  return report;
+  statusWriteQueue = report.then((written) => {
+    if (written) clearExtensionError("participant-status");
+    return written;
+  }).catch((error) => {
+    reportExtensionError("participant-status", error, "status");
+    return false;
+  });
+  return statusWriteQueue;
 }
 
 async function writeStatus(forceHeartbeat = false, statusOverride = null) {
   if (!currentUid || !meetingActive || !session || session.status !== "running"
-    || session.hostUid === currentUid || session.hostUid === storedHostUid) return;
+    || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
   const name = findMyName();
   if (name) currentName = name;
   const status = statusOverride ?? getCurrentStatus();
   const reportRunId = currentRunId;
   await ensureDurationState(Date.now());
-  if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId) return;
+  if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId) return false;
   const now = Date.now();
-  if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return;
+  if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return false;
   let nextActiveDurationMs = activeDurationMs;
   let nextAwayDurationMs = awayDurationMs;
   if (durationStatus && durationLastReportedAt !== null) {
@@ -248,25 +273,22 @@ async function writeStatus(forceHeartbeat = false, statusOverride = null) {
     if (durationStatus === "active") nextActiveDurationMs += elapsedMs;
     if (durationStatus === "away") nextAwayDurationMs += elapsedMs;
   }
-  try {
-    await setDoc(doc(db, "sessions", meetCode, "students", currentUid), {
-      uid: currentUid,
-      name: currentName || "Meet participant",
-      status,
-      runId: reportRunId,
-      activeDurationMs: nextActiveDurationMs,
-      awayDurationMs: nextAwayDurationMs,
-      lastSeen: serverTimestamp()
-    }, { merge: true });
-    activeDurationMs = nextActiveDurationMs;
-    awayDurationMs = nextAwayDurationMs;
-    durationStatus = ["active", "away"].includes(status) ? status : null;
-    durationLastReportedAt = durationStatus ? now : null;
-    lastStatus = status;
-    lastHeartbeatAt = now;
-  } catch (error) {
-    console.error("[InSession] Status sync failed:", error);
-  }
+  await setDoc(doc(db, "sessions", meetCode, "students", currentUid), {
+    uid: currentUid,
+    name: currentName || "Meet participant",
+    status,
+    runId: reportRunId,
+    activeDurationMs: nextActiveDurationMs,
+    awayDurationMs: nextAwayDurationMs,
+    lastSeen: serverTimestamp()
+  }, { merge: true });
+  activeDurationMs = nextActiveDurationMs;
+  awayDurationMs = nextAwayDurationMs;
+  durationStatus = ["active", "away"].includes(status) ? status : null;
+  durationLastReportedAt = durationStatus ? now : null;
+  lastStatus = status;
+  lastHeartbeatAt = now;
+  return true;
 }
 
 function syncMeetingContext() {
@@ -316,9 +338,10 @@ function scheduleMeetingContextCheck() {
 onAuthStateChanged(auth, async (user) => {
   if (!user) {
     try { await signInAnonymously(auth); }
-    catch (error) { console.error("[InSession] Anonymous sign-in failed:", error); }
+    catch (error) { reportExtensionError("participant-auth", error, "auth"); }
     return;
   }
+  clearExtensionError("participant-auth");
   currentUid = user.uid;
   if (user.displayName) currentName = user.displayName;
   listenForSession();
@@ -337,12 +360,28 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== "in-session:get-host-ui-role") return;
-  sendResponse({
-    meetCode: readMeetCode(),
-    inMeeting: isInMeeting(),
-    hostControlsVisible: isInMeeting() && hasMeetHostControls()
-  });
+  if (message?.type === "in-session:get-host-ui-role") {
+    const inMeeting = isInMeeting();
+    sendResponse({ meetCode: readMeetCode(), inMeeting, hostControlsVisible: inMeeting && hasMeetHostControls() });
+    return;
+  }
+  if (message?.type !== "in-session:retry") return;
+  if (message.action === "status") {
+    void reportStatus(true).then((ok) => sendResponse({ ok, message: ok ? "" : "Attendance is not currently being tracked." }));
+    return true;
+  }
+  if (message.action === "session") {
+    listenForSession();
+    sendResponse({ ok: true });
+    return;
+  }
+  if (message.action === "auth") {
+    void signInAnonymously(auth).then(() => sendResponse({ ok: true }), (error) => {
+      reportExtensionError("participant-auth", error, "auth");
+      sendResponse({ ok: false, message: error.message });
+    });
+    return true;
+  }
 });
 
 meetCode = readMeetCode();
