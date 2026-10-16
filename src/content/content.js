@@ -1,5 +1,5 @@
 import { onAuthStateChanged, signInAnonymously } from "firebase/auth/web-extension";
-import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
 const MEET_UI = Object.freeze({
@@ -14,6 +14,7 @@ const MEET_UI = Object.freeze({
 });
 const AWAY_DEBOUNCE_MS = 5000;
 const HEARTBEAT_MS = 30000;
+const DURATION_STALE_AFTER_MS = 60000;
 let meetCode = null;
 let session = null;
 let currentRunId = null;
@@ -25,6 +26,13 @@ let meetingActive = false;
 let meetingContextTimer = null;
 let leaveConfirmationTimer = null;
 let heartbeatTimer = null;
+let durationLoadedRunId = null;
+let durationLoadPromise = null;
+let activeDurationMs = 0;
+let awayDurationMs = 0;
+let durationStatus = null;
+let durationLastReportedAt = null;
+let statusWriteQueue = Promise.resolve();
 let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
@@ -101,7 +109,7 @@ function renderTrackingNotice() {
         <details>
           <summary>What is shared?</summary>
           <p>The session host can see your Meet display name, whether this Meet tab is Active or Away, and when your status was last updated. InSession checks this Meet tab only; it does not read your audio or video.</p>
-          <p>Tracking runs only while the host's session is running. Session records remain in the project's Firebase database after tracking ends; automatic deletion is not configured.</p>
+          <p>Tracking runs only while the host's session is running. When the host ends the session, attendance is downloaded as a CSV and the session records are deleted from Firebase after the download completes. If the download or cleanup fails, the host can retry.</p>
         </details>
       </section>`;
     (document.body || document.documentElement).appendChild(privacyNoticeHost);
@@ -130,6 +138,12 @@ function listenForSession() {
     const nextRunId = session?.runId ?? null;
     if (nextRunId !== currentRunId) {
       currentRunId = nextRunId;
+      durationLoadedRunId = null;
+      durationLoadPromise = null;
+      activeDurationMs = 0;
+      awayDurationMs = 0;
+      durationStatus = null;
+      durationLastReportedAt = null;
       lastStatus = null;
       lastHeartbeatAt = 0;
     }
@@ -139,6 +153,8 @@ function listenForSession() {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
       }
+      durationStatus = null;
+      durationLastReportedAt = null;
       lastStatus = null;
       return;
     }
@@ -173,21 +189,78 @@ function scheduleStatusReport(forceHeartbeat = false) {
   void reportStatus(forceHeartbeat);
 }
 
-async function reportStatus(forceHeartbeat = false, statusOverride = null) {
+function timestampMillis(value) {
+  return typeof value?.toMillis === "function" ? value.toMillis()
+    : value instanceof Date ? value.getTime()
+      : Number.NaN;
+}
+
+async function ensureDurationState(now) {
+  const runId = currentRunId;
+  if (!runId || durationLoadedRunId === runId) return;
+  if (!durationLoadPromise) {
+    durationLoadPromise = (async () => {
+      const snapshot = await getDoc(doc(db, "sessions", meetCode, "students", currentUid));
+      if (currentRunId !== runId) return;
+      if (snapshot.exists()) {
+        const previous = snapshot.data();
+        if (previous.runId === runId) {
+          activeDurationMs = Number(previous.activeDurationMs) || 0;
+          awayDurationMs = Number(previous.awayDurationMs) || 0;
+          const lastSeenMs = timestampMillis(previous.lastSeen);
+          const resumedAtMs = timestampMillis(session?.resumedAt) || timestampMillis(session?.startedAt);
+          const since = Math.max(lastSeenMs || now, resumedAtMs || 0, now - DURATION_STALE_AFTER_MS);
+          const unreportedMs = Math.max(0, now - since);
+          if (previous.status === "active") activeDurationMs += unreportedMs;
+          if (previous.status === "away") awayDurationMs += unreportedMs;
+        }
+      }
+      durationStatus = null;
+      durationLastReportedAt = null;
+      durationLoadedRunId = runId;
+    })().finally(() => { durationLoadPromise = null; });
+  }
+  await durationLoadPromise;
+}
+
+function reportStatus(forceHeartbeat = false, statusOverride = null) {
+  const report = statusWriteQueue.then(() => writeStatus(forceHeartbeat, statusOverride));
+  statusWriteQueue = report.catch((error) => console.error("[InSession] Status report failed:", error));
+  return report;
+}
+
+async function writeStatus(forceHeartbeat = false, statusOverride = null) {
   if (!currentUid || !meetingActive || !session || session.status !== "running"
     || session.hostUid === currentUid || session.hostUid === storedHostUid) return;
   const name = findMyName();
   if (name) currentName = name;
   const status = statusOverride ?? getCurrentStatus();
+  const reportRunId = currentRunId;
+  await ensureDurationState(Date.now());
+  if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId) return;
   const now = Date.now();
   if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return;
+  let nextActiveDurationMs = activeDurationMs;
+  let nextAwayDurationMs = awayDurationMs;
+  if (durationStatus && durationLastReportedAt !== null) {
+    const elapsedMs = Math.max(0, Math.min(now - durationLastReportedAt, DURATION_STALE_AFTER_MS));
+    if (durationStatus === "active") nextActiveDurationMs += elapsedMs;
+    if (durationStatus === "away") nextAwayDurationMs += elapsedMs;
+  }
   try {
     await setDoc(doc(db, "sessions", meetCode, "students", currentUid), {
       uid: currentUid,
       name: currentName || "Meet participant",
       status,
+      runId: reportRunId,
+      activeDurationMs: nextActiveDurationMs,
+      awayDurationMs: nextAwayDurationMs,
       lastSeen: serverTimestamp()
     }, { merge: true });
+    activeDurationMs = nextActiveDurationMs;
+    awayDurationMs = nextAwayDurationMs;
+    durationStatus = ["active", "away"].includes(status) ? status : null;
+    durationLastReportedAt = durationStatus ? now : null;
     lastStatus = status;
     lastHeartbeatAt = now;
   } catch (error) {

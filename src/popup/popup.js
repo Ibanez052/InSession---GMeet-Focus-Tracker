@@ -1,5 +1,5 @@
 import { GoogleAuthProvider, linkWithCredential, onAuthStateChanged, signInAnonymously, signInWithCredential, signOut } from "firebase/auth/web-extension";
-import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
 const byId = (id) => document.getElementById(id);
@@ -20,6 +20,7 @@ const participantMessage = byId("participant-message");
 const btnStart = document.querySelector(".btn-start");
 const btnPause = document.querySelector(".btn-pause");
 const btnEnd = document.querySelector(".btn-end");
+const btnDownloadAttendance = byId("download-attendance");
 const statusFilter = byId("status-filter");
 
 let user = null;
@@ -36,6 +37,7 @@ let pendingActionLabel = "";
 let anonymousAuthPromise = null;
 let stalenessTimer = null;
 const STALE_AFTER_MS = 60_000;
+const DELETE_BATCH_SIZE = 450;
 
 function getGoogleAccessToken() {
   return new Promise((resolve, reject) => {
@@ -82,6 +84,149 @@ function setParticipantNotice(heading, message) {
 function showSessionError(message) {
   if (isGoogleAccount(user)) setNotice(message, true);
   else setParticipantNotice("Could not connect to the session", message);
+}
+
+function toMillis(value) {
+  return typeof value?.toMillis === "function" ? value.toMillis()
+    : value instanceof Date ? value.getTime()
+      : Number.NaN;
+}
+
+function csvCell(value) {
+  let text = String(value ?? "");
+  if (/^[\t\r\n=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function formatDuration(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function isCurrentRunStudent(student, session) {
+  if (student.runId) return student.runId === session.runId;
+  const lastSeenMs = toMillis(student.lastSeen);
+  const startedAtMs = toMillis(session.startedAt);
+  return Number.isFinite(lastSeenMs) && Number.isFinite(startedAtMs) && lastSeenMs >= startedAtMs;
+}
+
+function createAttendanceCsv(session, participantDocs, endedAtMs) {
+  const startedAtMs = toMillis(session.startedAt);
+  const startedAt = Number.isFinite(startedAtMs) ? new Date(startedAtMs).toISOString() : "";
+  const endedAt = new Date(endedAtMs).toISOString();
+  const pausedAtMs = toMillis(session.pausedAt);
+  const resumedAtMs = toMillis(session.resumedAt);
+  const trackingEndedAtMs = Number.isFinite(pausedAtMs) && (!Number.isFinite(resumedAtMs) || pausedAtMs > resumedAtMs)
+    ? pausedAtMs
+    : endedAtMs;
+  const rows = [["Record type", "Meeting code", "Session started (UTC)", "Session ended (UTC)", "Participant", "Final status", "Active duration estimate", "Away duration estimate"]];
+  let activeTotalMs = 0;
+  let awayTotalMs = 0;
+  const participants = participantDocs.map((participantDoc) => {
+    const student = participantDoc.data();
+    const hasDurationData = typeof student.activeDurationMs === "number" && typeof student.awayDurationMs === "number";
+    let activeMs = Math.max(0, Number(student.activeDurationMs) || 0);
+    let awayMs = Math.max(0, Number(student.awayDurationMs) || 0);
+    const lastSeenMs = toMillis(student.lastSeen);
+    const signalAgeMs = Number.isFinite(lastSeenMs) ? Math.max(0, trackingEndedAtMs - lastSeenMs) : Number.POSITIVE_INFINITY;
+    const finalSegmentMs = Number.isFinite(signalAgeMs)
+      ? Math.max(0, Math.min(signalAgeMs, STALE_AFTER_MS, Math.max(0, trackingEndedAtMs - lastSeenMs)))
+      : 0;
+    if (student.status === "active") activeMs += finalSegmentMs;
+    if (student.status === "away") awayMs += finalSegmentMs;
+    if (hasDurationData) {
+      activeTotalMs += activeMs;
+      awayTotalMs += awayMs;
+    }
+    const finalStatus = student.status === "left" ? "Left"
+      : signalAgeMs <= STALE_AFTER_MS && ["active", "away"].includes(student.status)
+        ? student.status === "active" ? "Active" : "Away"
+        : "Not reporting";
+    return ["Participant", session.meetCode, startedAt, endedAt, student.name || "Meet participant", finalStatus,
+      hasDurationData ? formatDuration(activeMs) : "Unavailable in this extension version",
+      hasDurationData ? formatDuration(awayMs) : "Unavailable in this extension version"];
+  });
+  rows.push(["Known attendee duration total", session.meetCode, startedAt, endedAt, "", "", formatDuration(activeTotalMs), formatDuration(awayTotalMs)]);
+  rows.push(...participants);
+  return `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
+}
+
+async function waitForDownload(downloadId) {
+  await new Promise((resolve, reject) => {
+    const finish = (error) => {
+      chrome.downloads.onChanged.removeListener(onChanged);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onChanged = (delta) => {
+      if (delta.id !== downloadId || !delta.state) return;
+      if (delta.state.current === "complete") finish();
+      if (delta.state.current === "interrupted") finish(new Error("The CSV download was canceled or interrupted."));
+    };
+    chrome.downloads.onChanged.addListener(onChanged);
+    chrome.downloads.search({ id: downloadId }).then(([download]) => {
+      if (download?.state === "complete") finish();
+      else if (download?.state === "interrupted") finish(new Error("The CSV download was canceled or interrupted."));
+    }).catch(finish);
+  });
+}
+
+async function downloadAttendanceCsv(csv, meetCode, endedAtMs) {
+  const objectUrl = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const date = new Date(endedAtMs).toISOString().slice(0, 10);
+  try {
+    const downloadId = await chrome.downloads.download({
+      url: objectUrl,
+      filename: `InSession-${meetCode}-${date}.csv`,
+      saveAs: true
+    });
+    await waitForDownload(downloadId);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function deleteEndedSessionData(sessionRef, existingStudentsSnapshot = null) {
+  const studentsSnapshot = existingStudentsSnapshot ?? await getDocs(collection(sessionRef, "students"));
+  for (let start = 0; start < studentsSnapshot.docs.length; start += DELETE_BATCH_SIZE) {
+    const batch = writeBatch(db);
+    for (const student of studentsSnapshot.docs.slice(start, start + DELETE_BATCH_SIZE)) {
+      batch.delete(student.ref);
+    }
+    await batch.commit();
+  }
+  await deleteDoc(sessionRef);
+}
+
+async function downloadOrClearEndedSession() {
+  if (!isGoogleAccount(user) || !meetCode) {
+    throw new Error("Only the instructor can export an ended session.");
+  }
+  const sessionRef = doc(db, "sessions", meetCode);
+  const currentSessionSnapshot = await getDoc(sessionRef);
+  if (!currentSessionSnapshot.exists()) return;
+  const currentSession = currentSessionSnapshot.data();
+  if (currentSession.hostUid !== user.uid || currentSession.status !== "ended") {
+    throw new Error("The meeting session changed. Refresh and try again.");
+  }
+  let studentsToDelete = null;
+  if (!currentSession.exportedAt) {
+    const studentsSnapshot = await getDocs(collection(sessionRef, "students"));
+    const endedAtMs = toMillis(currentSession.endedAt) || Date.now();
+    const currentRunStudents = studentsSnapshot.docs.filter((student) =>
+      student.id !== currentSession.hostUid
+      && student.data().uid !== currentSession.hostUid
+      && isCurrentRunStudent(student.data(), currentSession)
+    );
+    const csv = createAttendanceCsv(currentSession, currentRunStudents, endedAtMs);
+    await downloadAttendanceCsv(csv, currentSession.meetCode || meetCode, endedAtMs);
+    await updateDoc(sessionRef, { exportedAt: serverTimestamp() });
+    studentsToDelete = studentsSnapshot;
+  }
+  await deleteEndedSessionData(sessionRef, studentsToDelete);
 }
 
 function isGoogleAccount(account) {
@@ -150,15 +295,22 @@ function updateControls() {
       setNotice("Open this side panel from an active Google Meet tab.");
       return;
     }
-    setNotice(sessionData?.status === "running" ? `Tracking is on for ${meetCode}.` : "You can start a session for this meeting.");
+    const notice = sessionData?.status === "running" ? `Tracking is on for ${meetCode}.`
+      : sessionData?.status === "ended"
+        ? sessionData.exportedAt ? "CSV downloaded; finish clearing session data." : "Download the attendance CSV to finish and clear session data."
+        : "You can start a session for this meeting.";
+    setNotice(notice);
 
     const status = sessionData?.status ?? "idle";
-    btnStart.disabled = status === "running" || Boolean(pendingAction);
+    btnStart.disabled = status === "running" || status === "ended" || Boolean(pendingAction);
     btnStart.textContent = pendingAction === btnStart ? pendingActionLabel : status === "paused" ? "Resume" : "Start";
     btnPause.disabled = status !== "running" || Boolean(pendingAction);
     btnPause.textContent = pendingAction === btnPause ? pendingActionLabel : "Pause";
     btnEnd.disabled = !["running", "paused"].includes(status) || Boolean(pendingAction);
     btnEnd.textContent = pendingAction === btnEnd ? pendingActionLabel : "End";
+    btnDownloadAttendance.hidden = status !== "ended";
+    btnDownloadAttendance.disabled = Boolean(pendingAction);
+    btnDownloadAttendance.textContent = sessionData?.exportedAt ? "Finish data cleanup" : "Download CSV & delete data";
     return;
   }
 
@@ -193,21 +345,26 @@ async function runSessionAction(button, pendingLabel, action, errorLabel) {
   if (pendingAction) return;
   pendingAction = button;
   pendingActionLabel = pendingLabel;
-  [btnStart, btnPause, btnEnd].forEach((control) => {
+  [btnStart, btnPause, btnEnd, btnDownloadAttendance].forEach((control) => {
     control.disabled = true;
     control.setAttribute("aria-busy", "true");
   });
   updateControls();
+  let succeeded = false;
+  let failureNotice = "";
   try {
     await action();
+    succeeded = true;
   } catch (error) {
-    setNotice(`${errorLabel}: ${error.message}`, true);
+    failureNotice = `${errorLabel}: ${error.message}`;
   } finally {
     pendingAction = null;
     pendingActionLabel = "";
-    [btnStart, btnPause, btnEnd].forEach((control) => control.removeAttribute("aria-busy"));
+    [btnStart, btnPause, btnEnd, btnDownloadAttendance].forEach((control) => control.removeAttribute("aria-busy"));
     updateControls();
   }
+  if (failureNotice) setNotice(failureNotice, true);
+  return succeeded;
 }
 
 function renderUI() {
@@ -300,6 +457,7 @@ function listenToMeeting() {
         }
         studentsData = students.docs
           .filter((student) => student.id !== sessionData.hostUid && student.data().uid !== sessionData.hostUid)
+          .filter((student) => isCurrentRunStudent(student.data(), sessionData))
           .map((student) => ({ id: student.id, ...student.data() }));
         studentsData.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         renderUI();
@@ -356,7 +514,7 @@ btnStart.addEventListener("click", async () => {
   await runSessionAction(btnStart, sessionData?.status === "paused" ? "Resuming…" : "Starting…", async () => {
     const sessionRef = doc(db, "sessions", meetCode);
     if (!sessionData) {
-      await setDoc(sessionRef, { meetCode, hostUid: user.uid, runId: crypto.randomUUID(), status: "running", startedAt: serverTimestamp() });
+      await setDoc(sessionRef, { meetCode, hostUid: user.uid, runId: crypto.randomUUID(), status: "running", startedAt: serverTimestamp(), resumedAt: serverTimestamp() });
     } else if (sessionData.hostUid === user.uid) {
       const nextRun = sessionData.status === "ended";
       await updateDoc(sessionRef, {
@@ -374,8 +532,17 @@ btnPause.addEventListener("click", async () => {
 });
 
 btnEnd.addEventListener("click", async () => {
-  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid || !confirm("End tracking for this meeting?")) return;
-  await runSessionAction(btnEnd, "Ending…", () => updateDoc(doc(db, "sessions", meetCode), { status: "ended", endedAt: serverTimestamp() }), "Could not end tracking");
+  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid || !confirm("End tracking, download the attendance CSV, and delete the session data from Firebase?")) return;
+  const completed = await runSessionAction(btnEnd, "Ending…", async () => {
+    await updateDoc(doc(db, "sessions", meetCode), { status: "ended", endedAt: serverTimestamp() });
+    await downloadOrClearEndedSession();
+  }, "Could not finish export and cleanup");
+  if (completed) setNotice("Attendance CSV saved. Session data has been deleted from Firebase.");
+});
+
+btnDownloadAttendance.addEventListener("click", async () => {
+  const completed = await runSessionAction(btnDownloadAttendance, "Saving CSV…", downloadOrClearEndedSession, "Could not export attendance");
+  if (completed) setNotice("Attendance CSV saved. Session data has been deleted from Firebase.");
 });
 
 searchInput.addEventListener("input", (event) => { searchQuery = event.target.value.trim(); renderUI(); });

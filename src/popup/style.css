@@ -228,6 +228,7 @@
 
     .action-buttons {
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
     }
 
@@ -264,6 +265,13 @@
     }
 
     .btn-end:hover:not(:disabled) { color: #913c3b; background-color: #fff1f0; border-color: #e8c9c8; }
+
+    .btn-download {
+      color: #ffffff;
+      background-color: #315c7d;
+    }
+
+    .btn-download:hover:not(:disabled) { background-color: #244764; }
 
     .filter-tools {
       display: grid;

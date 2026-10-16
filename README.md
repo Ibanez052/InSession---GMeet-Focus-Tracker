@@ -23,7 +23,7 @@ Before signing in or tracking participants:
 4. In Firebase Authentication's Authorized domains settings, add `chrome-extension://<your-extension-id>`.
 5. Deploy the included Firestore rules with the Firebase CLI: `firebase deploy --only firestore:rules --project insession-d7332`.
 
-The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization.
+The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization. Attendance data is stored in Cloud Firestore (not Firebase Storage) only while a session is active or awaiting a successful export. Ending a session downloads a CSV and then removes the session and attendee documents from Firestore.
 
 ## Current files
 
@@ -125,6 +125,7 @@ All fixes below fit one redesign:
   }
   ```
   The `status == "running"` check also stops students being recreated after End. Rule `get()` calls count as reads, so keep heartbeats at 30 s or slower.
+  **Deployment:** this branch adds duration fields and run ID validation to participant writes. Redeploy `firestore.rules` after merging this change.
 
 - [x] **19. Host and participant UI roles.** The side panel only offers instructor sign-in and host controls when the Meet page exposes its host-controls button. Other users get the participant status view. This depends on Meet's UI markup and is not a security boundary: Firestore rules cannot verify the role signal, and a determined signed-in user could bypass the extension UI.
   **Deployment:** redeploy `firestore.rules` after merging rule changes. The current rules require Google sign-in and preserve session ownership, but do not independently verify the actual Meet host.
@@ -134,8 +135,7 @@ All fixes below fit one redesign:
 
 - [x] **21. Firebase API key is public in the repo.** This is expected for client-side Firebase configuration. Firestore rules protect data access; the key is not an authorization secret.
 
-- [ ] **22. Participant privacy notice and retention.** A notice now appears on the Meet page while a non-host's session is running. It explains which status data is shared, that only the Meet tab is monitored, and that session data currently has no automatic deletion. Tracking remains limited to a running session. The retention duration and deletion process still need a product decision before this item is complete.
-  **Remaining:** choose a retention period and implement/document the corresponding deletion behavior.
+- [x] **22. Participant privacy notice and retention.** The notice explains the data shared and the cleanup flow. The host downloads attendance when ending the session; Firestore records are deleted only after Chrome confirms the CSV download. If the download fails or is canceled, the ended session remains available for retry.
 
 - [ ] **23. Clients can be spoofed or disabled.** Rules stop students writing as someone else, but a determined student can still disable the extension.
   **Fix:** treat "no signal" as its own flag rather than "present".
@@ -145,8 +145,7 @@ All fixes below fit one redesign:
 - [ ] **24. Silent `catch {}` blocks.** Failures (quota, rule denials, network) are invisible.
   **Fix:** log errors, show an error state with retry in the popup, and set a badge on the extension icon.
 
-- [ ] **25. Ending a session deletes everything.** There is no history, no focus-time data and no export.
-  **Fix:** archive instead of delete. Store accumulated away time per student and add a CSV export.
+- [x] **25. Ending a session deletes everything.** Ending now exports a CSV with each participant's final status and estimated active/away time, then deletes session and attendee records from Firestore after the download completes. Durations are heartbeat-based estimates, not exact timers. The downloaded CSV is the host's attendance record; InSession does not keep server-side session history. Participants need the updated extension for duration estimates; older clients still appear in the export, but their duration values are marked unavailable.
 
 - [x] **26. Manual status override fights live reports.**
   **Fix:** store it as a separate `override` field with a visible marker, add an undo, or remove the feature.
@@ -170,7 +169,7 @@ All fixes below fit one redesign:
 
 - [ ] **33. Documentation.** This README covers Firebase setup, rules deployment, and the build/unpacked-extension workflow. A project LICENSE is still needed.
 
-- [ ] **34. Manifest icons.** The name, identity permission, action entry, side panel, and background service worker are present. Add standard 16/48/128 extension icons and declare them in the manifest.
+- [ ] **34. Manifest icons.** The name, identity/downloads permissions, action entry, side panel, and background service worker are present. Add standard 16/48/128 extension icons and declare them in the manifest.
 
 ---
 

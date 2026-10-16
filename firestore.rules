@@ -23,13 +23,21 @@ service cloud.firestore {
       allow delete: if isHost(code);
 
       match /students/{uid} {
-        allow read: if isHost(code);
+        allow read: if isHost(code) || (signedIn() && request.auth.uid == uid);
         allow create, update: if signedIn() && request.auth.uid == uid
           && sessionExists(code)
           && get(/databases/$(database)/documents/sessions/$(code)).data.status == 'running'
           && get(/databases/$(database)/documents/sessions/$(code)).data.hostUid != uid
-          && request.resource.data.keys().hasOnly(['uid', 'name', 'status', 'lastSeen'])
+          && request.resource.data.keys().hasOnly([
+            'uid', 'name', 'status', 'runId', 'activeDurationMs', 'awayDurationMs', 'lastSeen'
+          ])
           && request.resource.data.uid == uid
+          && (!('runId' in request.resource.data)
+            || request.resource.data.runId == get(/databases/$(database)/documents/sessions/$(code)).data.runId)
+          && (!('activeDurationMs' in request.resource.data)
+            || (request.resource.data.activeDurationMs is number && request.resource.data.activeDurationMs >= 0))
+          && (!('awayDurationMs' in request.resource.data)
+            || (request.resource.data.awayDurationMs is number && request.resource.data.awayDurationMs >= 0))
           && request.resource.data.status in ['active', 'away', 'left'];
         allow delete: if isHost(code) || (signedIn() && request.auth.uid == uid);
       }
