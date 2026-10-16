@@ -202,7 +202,7 @@
 
     .logout-btn:hover:not(:disabled) { background: #0f6259; box-shadow: 0 3px 9px rgb(22 119 108 / 22%); }
     .logout-btn:active:not(:disabled), .btn:active:not(:disabled) { transform: translateY(1px) scale(0.98); }
-    button:disabled { cursor: wait; opacity: 0.62; box-shadow: none; }
+    button:disabled { cursor: default; opacity: 0.62; box-shadow: none; }
 
     button:focus-visible,
     input:focus-visible,
