@@ -20,9 +20,9 @@ const participantMessage = byId("participant-message");
 const retryParticipantErrorButton = byId("retry-participant-error");
 const retrySessionErrorButton = byId("retry-session-error");
 const refreshHostDetectionButton = byId("refresh-host-detection");
-const btnStart = document.querySelector(".btn-start");
-const btnPause = document.querySelector(".btn-pause");
-const btnEnd = document.querySelector(".btn-end");
+const btnStart = byId("start-session");
+const btnPause = byId("pause-session");
+const btnEnd = byId("end-session");
 const btnDownloadAttendance = byId("download-attendance");
 const statusFilter = byId("status-filter");
 const checkInSettings = byId("check-in-settings");
@@ -51,6 +51,7 @@ let anonymousAuthPromise = null;
 let stalenessTimer = null;
 let checkInRefreshTimer = null;
 let selectedCheckInInterval = 0;
+let endConfirmationPending = false;
 const STALE_AFTER_MS = 60_000;
 const DELETE_BATCH_SIZE = 450;
 
@@ -470,7 +471,7 @@ function updateControls() {
     btnPause.disabled = status !== "running" || Boolean(pendingAction);
     btnPause.textContent = pendingAction === btnPause ? pendingActionLabel : "Pause";
     btnEnd.disabled = !["running", "paused"].includes(status) || Boolean(pendingAction);
-    btnEnd.textContent = pendingAction === btnEnd ? pendingActionLabel : "End";
+    btnEnd.textContent = pendingAction === btnEnd ? pendingActionLabel : endConfirmationPending ? "Confirm end" : "End";
     btnDownloadAttendance.hidden = status !== "ended";
     btnDownloadAttendance.disabled = Boolean(pendingAction);
     btnDownloadAttendance.textContent = sessionData?.exportedAt ? "Finish data cleanup" : "Download CSV & delete data";
@@ -783,12 +784,23 @@ btnPause.addEventListener("click", async () => {
 });
 
 btnEnd.addEventListener("click", async () => {
-  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid || !confirm("End tracking, download the attendance CSV, and delete the session data from Firebase?")) return;
+  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid) return;
+  if (!endConfirmationPending) {
+    endConfirmationPending = true;
+    setNotice("Click Confirm end to stop tracking, download the CSV, and delete the session data.");
+    updateControls();
+    return;
+  }
+  endConfirmationPending = false;
   const completed = await runSessionAction(btnEnd, "Ending…", async () => {
     await updateDoc(doc(db, "sessions", meetCode), { status: "ended", endedAt: serverTimestamp() });
     await downloadOrClearEndedSession();
   }, "Could not finish export and cleanup");
   if (completed) setNotice("Attendance CSV saved. Session data has been deleted from Firebase.");
+  else {
+    endConfirmationPending = false;
+    updateControls();
+  }
 });
 
 btnDownloadAttendance.addEventListener("click", async () => {

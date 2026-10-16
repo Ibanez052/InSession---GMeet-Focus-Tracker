@@ -57,7 +57,15 @@ function getParticipantRoster() {
   const ownName = normalizeParticipantName(findMyName());
   for (const row of document.querySelectorAll(MEET_UI.participantRows)) {
     if (MEET_UI.youLabel.test(row.textContent || "")) continue;
-    const lines = (row.innerText || row.textContent || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const textRow = row.cloneNode(true);
+    textRow.querySelectorAll('button, [role="button"], [aria-label], [data-tooltip], [title]')
+      .forEach((control) => control.remove());
+    const text = (textRow.innerText || textRow.textContent || "")
+      .replace(/\bYou can't unmute someone else\b/gi, " ")
+      .replace(/\bMore actions?\b/gi, " ")
+      .replace(/\bmore_vert\b/gi, " ")
+      .replace(/\bdevices?\b/gi, " ");
+    const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
     const name = lines[0]?.replace(/\s*\(You\)\s*/i, " ").trim();
     if (!name || name.length > 80) continue;
     if (ownName && normalizeParticipantName(name) === ownName) continue;
