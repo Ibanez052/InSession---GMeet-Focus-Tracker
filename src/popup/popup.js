@@ -17,6 +17,7 @@ const hostDashboard = byId("host-dashboard");
 const participantView = byId("participant-view");
 const participantHeading = byId("participant-heading");
 const participantMessage = byId("participant-message");
+const refreshHostDetectionButton = byId("refresh-host-detection");
 const btnStart = document.querySelector(".btn-start");
 const btnPause = document.querySelector(".btn-pause");
 const btnEnd = document.querySelector(".btn-end");
@@ -26,6 +27,7 @@ const statusFilter = byId("status-filter");
 let user = null;
 let meetCode = null;
 let hostControlsVisible = false;
+let hostDetectionRequestId = 0;
 let sessionData = null;
 let studentsData = [];
 let currentFilter = "all";
@@ -284,6 +286,8 @@ function updateControls() {
   hostControls.hidden = !isHost;
   hostDashboard.hidden = !isHost;
   participantView.hidden = isHost;
+  refreshHostDetectionButton.hidden = !meetCode || hostControlsVisible
+    || Boolean(sessionData?.hostUid && user?.uid && sessionData.hostUid !== user.uid);
   signInButton.hidden = !hostControlsVisible || isGoogleUser
     || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid);
   signInButton.textContent = user?.isAnonymous ? "Sign in as instructor" : "Instructor sign-in";
@@ -561,23 +565,65 @@ function useActiveTab(tab) {
   refreshHostUiRole(tab?.id);
 }
 
-function refreshHostUiRole(tabId) {
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function requestHostUiRole(tabId) {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { type: "in-session:get-host-ui-role" }, (result) => {
+      resolve(chrome.runtime.lastError ? null : result);
+    });
+  });
+}
+
+async function refreshHostUiRole(tabId, { retry = false, showResult = false } = {}) {
+  const requestId = ++hostDetectionRequestId;
   if (!tabId || !meetCode) {
     hostControlsVisible = false;
     updateControls();
     return;
   }
-  chrome.tabs.sendMessage(tabId, { type: "in-session:get-host-ui-role" }, (result) => {
-    // A missing content script or changed Meet UI must not grant host controls.
-    if (chrome.runtime.lastError) {
+  let result = null;
+  const attempts = retry ? 8 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    result = await requestHostUiRole(tabId);
+    if (hostDetectionRequestId !== requestId) return;
+    if (result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode) break;
+    if (attempt + 1 < attempts) await wait(400);
+  }
+  if (hostDetectionRequestId !== requestId) return;
+  hostControlsVisible = Boolean(result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode);
+  updateControls();
+  if (showResult && !hostControlsVisible) {
+    setParticipantNotice("Host controls still not detected", result
+      ? "Open Host controls in Google Meet, then refresh here. If you just loaded the extension, reload the Meet tab first."
+      : "The extension could not reach this Meet tab. Reload the Meet tab and try again.");
+  } else if (showResult && hostControlsVisible && !isGoogleAccount(user)) {
+    setParticipantNotice("Instructor sign-in", "Meet host controls were detected. Sign in with Google to manage attendance.");
+  }
+}
+
+async function refreshHostDetection() {
+  if (refreshHostDetectionButton.disabled) return;
+  refreshHostDetectionButton.disabled = true;
+  refreshHostDetectionButton.textContent = "Checking Meet controls…";
+  setParticipantNotice("Checking Meet host controls…", "Looking for the host controls in your current meeting.");
+  chrome.tabs.query({ active: true, currentWindow: true }, async ([tab]) => {
+    const tabMeetCode = getMeetCode(tab?.url);
+    if (!tab || tabMeetCode !== meetCode) {
       hostControlsVisible = false;
       updateControls();
-      return;
+      setParticipantNotice("Open the meeting tab", "Switch to your active Google Meet tab, then refresh host detection.");
+    } else {
+      await refreshHostUiRole(tab.id, { retry: true, showResult: true });
     }
-    hostControlsVisible = Boolean(result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode);
-    updateControls();
+    refreshHostDetectionButton.disabled = false;
+    refreshHostDetectionButton.textContent = "Refresh host detection";
   });
 }
+
+refreshHostDetectionButton.addEventListener("click", refreshHostDetection);
 
 function refreshActiveTab() {
   chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => useActiveTab(tab));

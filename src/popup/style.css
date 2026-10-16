@@ -119,6 +119,20 @@
       line-height: 1.55;
     }
 
+    .refresh-role-btn {
+      min-height: 38px;
+      border: 1px solid #cbdad6;
+      border-radius: 8px;
+      padding: 8px 14px;
+      background: #ffffff;
+      color: #315c7d;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .refresh-role-btn:hover:not(:disabled) { background: #f2f6f5; }
+
     .sr-only {
       position: absolute;
       width: 1px;

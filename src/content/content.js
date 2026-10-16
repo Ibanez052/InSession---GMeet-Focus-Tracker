@@ -5,8 +5,8 @@ import { auth, db } from "../shared/firebase.js";
 const MEET_UI = Object.freeze({
   leaveControls: 'button[aria-label], [role="button"][aria-label]',
   leaveLabels: [/^leave call$/i, /^leave meeting$/i],
-  hostControls: 'button[aria-label], [role="button"][aria-label]',
-  hostControlLabel: /\bhost controls\b/i,
+  hostControls: 'button[aria-label], button[title], button[data-tooltip], [role="button"][aria-label], [role="button"][title], [role="button"][data-tooltip]',
+  hostControlLabel: /\b(?:host controls?|meeting controls?|host management|meeting safety)\b/i,
   googleAccount: '[aria-label*="Google Account:" i]',
   selfName: "[data-self-name]",
   participantRows: '[role="listitem"]',
@@ -53,10 +53,11 @@ function isInMeeting() {
 }
 
 function hasMeetHostControls() {
-  // Google Meet exposes its host-only controls as a toolbar button. This is a
-  // UI signal, not a security boundary; fail closed when the label is absent.
+  // Google Meet exposes host-only controls through an accessible label or
+  // tooltip. This is a UI signal, not a security boundary.
   return Array.from(document.querySelectorAll(MEET_UI.hostControls))
-    .some((control) => MEET_UI.hostControlLabel.test(control.getAttribute("aria-label") ?? ""));
+    .some((control) => ["aria-label", "title", "data-tooltip"]
+      .some((attribute) => MEET_UI.hostControlLabel.test(control.getAttribute(attribute) ?? "")));
 }
 
 function isCleanName(value) {

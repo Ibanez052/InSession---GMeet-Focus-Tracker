@@ -127,7 +127,7 @@ All fixes below fit one redesign:
   The `status == "running"` check also stops students being recreated after End. Rule `get()` calls count as reads, so keep heartbeats at 30 s or slower.
   **Deployment:** this branch adds duration fields and run ID validation to participant writes. Redeploy `firestore.rules` after merging this change.
 
-- [x] **19. Host and participant UI roles.** The side panel only offers instructor sign-in and host controls when the Meet page exposes its host-controls button. Other users get the participant status view. This depends on Meet's UI markup and is not a security boundary: Firestore rules cannot verify the role signal, and a determined signed-in user could bypass the extension UI.
+- [x] **19. Host and participant UI roles.** The side panel offers instructor sign-in and host controls when the Meet page exposes host-control labels. The participant view includes a retry button for delayed or missed detection. This depends on Meet's UI markup and is not a security boundary: Firestore rules cannot verify the role signal, and a determined signed-in user could bypass the extension UI.
   **Deployment:** redeploy `firestore.rules` after merging rule changes. The current rules require Google sign-in and preserve session ownership, but do not independently verify the actual Meet host.
 
 - [x] **20. Markup injection via `innerHTML`.** Student names are user-controlled and inserted unescaped. MV3 blocks inline handlers, which limits the damage, but it should still be fixed.
