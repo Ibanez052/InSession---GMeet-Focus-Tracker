@@ -37,6 +37,8 @@ let meetingActive = false;
 let meetingContextTimer = null;
 let leaveConfirmationTimer = null;
 let heartbeatTimer = null;
+let checkInTimer = null;
+let rosterUpdateTimer = null;
 let durationLoadedRunId = null;
 let durationLoadPromise = null;
 let activeDurationMs = 0;
@@ -48,6 +50,65 @@ let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
 let privacyNoticeHost = null;
+let checkInAck = null;
+
+function getParticipantRoster() {
+  const names = new Map();
+  const ownName = normalizeParticipantName(findMyName());
+  for (const row of document.querySelectorAll(MEET_UI.participantRows)) {
+    if (MEET_UI.youLabel.test(row.textContent || "")) continue;
+    const lines = (row.innerText || row.textContent || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const name = lines[0]?.replace(/\s*\(You\)\s*/i, " ").trim();
+    if (!name || name.length > 80) continue;
+    if (ownName && normalizeParticipantName(name) === ownName) continue;
+    names.set(normalizeParticipantName(name), name);
+  }
+  return [...names.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function normalizeParticipantName(name) {
+  return String(name || "").normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function publishParticipantRoster() {
+  if (!meetingActive || !hasMeetHostControls()) return;
+  chrome.runtime.sendMessage({ type: "in-session:roster-update", meetCode, participantNames: getParticipantRoster() }, () => { void chrome.runtime.lastError; });
+}
+
+function scheduleRosterUpdate() {
+  if (rosterUpdateTimer !== null) return;
+  rosterUpdateTimer = setTimeout(() => {
+    rosterUpdateTimer = null;
+    publishParticipantRoster();
+  }, 750);
+}
+
+function currentCheckInRound(now = Date.now()) {
+  const interval = Number(session?.checkInIntervalMinutes);
+  if (!Number.isFinite(interval) || interval <= 0 || session?.status !== "running") return 0;
+  const cycleStartedAt = timestampMillis(session.checkInCycleStartedAt)
+    || timestampMillis(session.resumedAt)
+    || timestampMillis(session.startedAt);
+  if (!Number.isFinite(cycleStartedAt)) return 0;
+  const elapsed = now - cycleStartedAt;
+  if (elapsed < interval * 60_000) return 0;
+  return Math.floor(elapsed / (interval * 60_000));
+}
+
+function updateCheckInBadge() {
+  const round = currentCheckInRound();
+  const cycleId = session?.checkInCycleId || "";
+  const isParticipant = Boolean(meetingActive && currentUid && session?.hostUid !== currentUid && session?.hostUid !== storedHostUid);
+  const pending = Boolean(isParticipant && round && cycleId && !(
+    checkInAck?.meetCode === meetCode
+    && checkInAck?.runId === currentRunId
+    && checkInAck?.cycleId === cycleId
+    && checkInAck?.round === round
+  ));
+  try {
+    chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending }, () => { void chrome.runtime.lastError; });
+  } catch (error) { console.warn("[InSession] Could not update the activity check-in badge:", error); }
+}
 
 function reportExtensionError(source, error, retryAction = null) {
   const message = error?.message || String(error || "Unknown error");
@@ -140,7 +201,7 @@ function renderTrackingNotice() {
         <div class="heading"><span class="dot" aria-hidden="true"></span><span>InSession attendance tracking is on</span></div>
         <details>
           <summary>What is shared?</summary>
-          <p>The session host can see your Meet display name, whether this Meet tab is Active or Away, and when your status was last updated. InSession checks this Meet tab only; it does not read your audio or video.</p>
+          <p>The session host can see your Meet display name, whether this Meet tab is Active or Away, and when your status was last updated. The host may also request a periodic one-click activity confirmation; the response time is shared with the host. InSession checks this Meet tab only; it does not read your audio or video.</p>
           <p>Tracking runs only while the host's session is running. When the host ends the session, attendance is downloaded as a CSV and the session records are deleted from Firebase after the download completes. If the download or cleanup fails, the host can retry.</p>
         </details>
       </section>`;
@@ -155,6 +216,10 @@ function listenForSession() {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+  if (checkInTimer !== null) {
+    clearInterval(checkInTimer);
+    checkInTimer = null;
+  }
   session = null;
   currentRunId = null;
   lastStatus = null;
@@ -164,10 +229,15 @@ function listenForSession() {
     awayTimer = null;
   }
   renderTrackingNotice();
+  updateCheckInBadge();
   if (!meetCode || !currentUid || !meetingActive) return;
   stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
     clearExtensionError("participant-session");
     session = snapshot.exists() ? snapshot.data() : null;
+    chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
+      checkInAck = activityCheckInAcks?.[meetCode] ?? null;
+      updateCheckInBadge();
+    });
     const nextRunId = session?.runId ?? null;
     if (nextRunId !== currentRunId) {
       currentRunId = nextRunId;
@@ -189,8 +259,20 @@ function listenForSession() {
       durationStatus = null;
       durationLastReportedAt = null;
       lastStatus = null;
+      if (checkInTimer !== null) {
+        clearInterval(checkInTimer);
+        checkInTimer = null;
+      }
+      updateCheckInBadge();
       return;
     }
+    if (Number(session.checkInIntervalMinutes) > 0 && checkInTimer === null) {
+      checkInTimer = setInterval(updateCheckInBadge, 10_000);
+    } else if (Number(session.checkInIntervalMinutes) <= 0 && checkInTimer !== null) {
+      clearInterval(checkInTimer);
+      checkInTimer = null;
+    }
+    updateCheckInBadge();
     if (heartbeatTimer === null) {
       heartbeatTimer = setInterval(() => scheduleStatusReport(true), HEARTBEAT_MS);
     }
@@ -256,8 +338,8 @@ async function ensureDurationState(now) {
   await durationLoadPromise;
 }
 
-function reportStatus(forceHeartbeat = false, statusOverride = null) {
-  const report = statusWriteQueue.then(() => writeStatus(forceHeartbeat, statusOverride));
+function reportStatus(forceHeartbeat = false, statusOverride = null, additionalFields = {}) {
+  const report = statusWriteQueue.then(() => writeStatus(forceHeartbeat, statusOverride, additionalFields));
   statusWriteQueue = report.then((written) => {
     if (written) clearExtensionError("participant-status");
     return written;
@@ -268,7 +350,7 @@ function reportStatus(forceHeartbeat = false, statusOverride = null) {
   return statusWriteQueue;
 }
 
-async function writeStatus(forceHeartbeat = false, statusOverride = null) {
+async function writeStatus(forceHeartbeat = false, statusOverride = null, additionalFields = {}) {
   if (!currentUid || !meetingActive || !session || session.status !== "running"
     || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
   const name = findMyName();
@@ -293,7 +375,8 @@ async function writeStatus(forceHeartbeat = false, statusOverride = null) {
     runId: reportRunId,
     activeDurationMs: nextActiveDurationMs,
     awayDurationMs: nextAwayDurationMs,
-    lastSeen: serverTimestamp()
+    lastSeen: serverTimestamp(),
+    ...additionalFields
   }, { merge: true });
   activeDurationMs = nextActiveDurationMs;
   awayDurationMs = nextAwayDurationMs;
@@ -363,19 +446,21 @@ onAuthStateChanged(auth, async (user) => {
 chrome.storage.local.get("hostUid", ({ hostUid }) => {
   storedHostUid = hostUid ?? null;
   renderTrackingNotice();
+  updateCheckInBadge();
   if (session?.status === "running" && session.hostUid === storedHostUid) lastStatus = null;
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !changes.hostUid) return;
   storedHostUid = changes.hostUid.newValue ?? null;
   renderTrackingNotice();
+  updateCheckInBadge();
   if (session?.hostUid === storedHostUid) lastStatus = null;
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "in-session:get-host-ui-role") {
     const inMeeting = isInMeeting();
-    sendResponse({ meetCode: readMeetCode(), inMeeting, hostControlsVisible: inMeeting && hasMeetHostControls() });
+    sendResponse({ meetCode: readMeetCode(), inMeeting, hostControlsVisible: inMeeting && hasMeetHostControls(), participantNames: inMeeting && hasMeetHostControls() ? getParticipantRoster() : [] });
     return;
   }
   if (message?.type !== "in-session:retry") return;
@@ -388,6 +473,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return;
   }
+  if (message.action === "check-in") {
+    const round = currentCheckInRound();
+    const cycleId = session?.checkInCycleId || "";
+    if (!round || round !== message.round || !cycleId || cycleId !== message.cycleId) {
+      sendResponse({ ok: false, message: "That activity check has expired. Refresh the side panel." });
+      return;
+    }
+    void reportStatus(true, lastStatus ?? getCurrentStatus(), { checkInRound: round, checkInCycleId: cycleId, checkInAt: serverTimestamp() })
+      .then(async (ok) => {
+        if (!ok) throw new Error("Your activity confirmation could not be saved.");
+        checkInAck = { meetCode, runId: currentRunId, cycleId, round };
+        const stored = await chrome.storage.local.get("activityCheckInAcks");
+        const checkInAcks = stored.activityCheckInAcks ?? {};
+        checkInAcks[meetCode] = checkInAck;
+        await chrome.storage.local.set({ activityCheckInAcks: checkInAcks });
+        updateCheckInBadge();
+        sendResponse({ ok: true });
+      })
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
+    return true;
+  }
   if (message.action === "auth") {
     void signInAnonymously(auth).then(() => sendResponse({ ok: true }), (error) => {
       reportExtensionError("participant-auth", error, "auth");
@@ -399,7 +505,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
 meetCode = readMeetCode();
 meetingActive = Boolean(meetCode && isInMeeting());
-const routeObserver = new MutationObserver(scheduleMeetingContextCheck);
+const routeObserver = new MutationObserver(() => {
+  scheduleMeetingContextCheck();
+  scheduleRosterUpdate();
+});
 routeObserver.observe(document.documentElement, { childList: true, subtree: true });
 document.addEventListener("visibilitychange", () => scheduleStatusReport(true));
 window.addEventListener("focus", () => scheduleStatusReport(true));
@@ -407,6 +516,7 @@ window.addEventListener("blur", () => scheduleStatusReport(true));
 window.addEventListener("pagehide", () => {
   if (awayTimer !== null) clearTimeout(awayTimer);
   awayTimer = null;
+  chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending: false }, () => { void chrome.runtime.lastError; });
   void reportStatus(true, "left");
 });
 window.addEventListener("pageshow", () => scheduleStatusReport(true));

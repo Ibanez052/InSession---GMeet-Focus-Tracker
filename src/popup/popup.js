@@ -25,16 +25,22 @@ const btnPause = document.querySelector(".btn-pause");
 const btnEnd = document.querySelector(".btn-end");
 const btnDownloadAttendance = byId("download-attendance");
 const statusFilter = byId("status-filter");
+const checkInSettings = byId("check-in-settings");
+const checkInIntervalSelect = byId("check-in-interval");
+const activityCheckIn = byId("activity-check-in");
+const confirmActivityButton = byId("confirm-activity");
 
 let user = null;
 let meetCode = null;
 let hostControlsVisible = false;
 let hostDetectionRequestId = 0;
+let activeMeetTabId = null;
 let popupErrorMessage = "";
 let popupErrorSource = "";
 let popupErrorRetry = null;
 let sessionData = null;
 let studentsData = [];
+let rosterNames = [];
 let currentFilter = "all";
 let searchQuery = "";
 let stopSessionListener = null;
@@ -43,6 +49,8 @@ let pendingAction = null;
 let pendingActionLabel = "";
 let anonymousAuthPromise = null;
 let stalenessTimer = null;
+let checkInRefreshTimer = null;
+let selectedCheckInInterval = 0;
 const STALE_AFTER_MS = 60_000;
 const DELETE_BATCH_SIZE = 450;
 
@@ -141,14 +149,14 @@ function showSessionError(message) {
   showPopupError(message, "session-read", listenToMeeting);
 }
 
-function retryContentAction(action) {
+function retryContentAction(action, payload = {}) {
   return new Promise((resolve, reject) => {
     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
       if (!tab || getMeetCode(tab.url) !== meetCode) {
         reject(new Error("Open the affected Google Meet tab and retry."));
         return;
       }
-      chrome.tabs.sendMessage(tab.id, { type: "in-session:retry", action }, (response) => {
+      chrome.tabs.sendMessage(tab.id, { type: "in-session:retry", action, ...payload }, (response) => {
         if (chrome.runtime.lastError) {
           reject(new Error("Reload the Meet tab, then retry."));
           return;
@@ -163,12 +171,16 @@ function retryContentAction(action) {
   });
 }
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, sender) => {
   if (message?.type === "in-session:report-error") {
     const retry = message.retryAction ? () => retryContentAction(message.retryAction) : null;
     showPopupError(message.message || "Attendance tracking needs attention.", message.source || "unknown", retry);
   } else if (message?.type === "in-session:clear-error") {
     clearPopupError(message.source || "unknown");
+  } else if (message?.type === "in-session:roster-update"
+    && sender.tab?.id === activeMeetTabId && message.meetCode === meetCode && hostControlsVisible) {
+    rosterNames = Array.isArray(message.participantNames) ? message.participantNames : [];
+    renderUI();
   }
 });
 
@@ -193,6 +205,39 @@ function toMillis(value) {
   return typeof value?.toMillis === "function" ? value.toMillis()
     : value instanceof Date ? value.getTime()
       : Number.NaN;
+}
+
+function normalizeParticipantName(name) {
+  return String(name || "").normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function currentCheckInRound(now = Date.now()) {
+  const interval = Number(sessionData?.checkInIntervalMinutes);
+  if (!Number.isFinite(interval) || interval <= 0 || sessionData?.status !== "running") return 0;
+  const cycleStartedAt = toMillis(sessionData.checkInCycleStartedAt)
+    || toMillis(sessionData.resumedAt)
+    || toMillis(sessionData.startedAt);
+  if (!Number.isFinite(cycleStartedAt)) return 0;
+  const elapsed = now - cycleStartedAt;
+  if (elapsed < interval * 60_000) return 0;
+  return Math.floor(elapsed / (interval * 60_000));
+}
+
+function updateParticipantCheckIn() {
+  const round = currentCheckInRound();
+  const cycleId = sessionData?.checkInCycleId || "";
+  chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
+    const activityCheckInAck = activityCheckInAcks?.[meetCode];
+    const pending = Boolean(round && cycleId && user && sessionData?.hostUid !== user.uid && !(
+      activityCheckInAck?.meetCode === meetCode
+      && activityCheckInAck?.runId === sessionData.runId
+      && activityCheckInAck?.cycleId === cycleId
+      && activityCheckInAck?.round === round
+    ));
+    activityCheckIn.hidden = !pending;
+    confirmActivityButton.disabled = Boolean(pendingAction);
+    confirmActivityButton.textContent = pending ? "I'm here" : "Confirmed";
+  });
 }
 
 function csvCell(value) {
@@ -225,7 +270,7 @@ function createAttendanceCsv(session, participantDocs, endedAtMs) {
   const trackingEndedAtMs = Number.isFinite(pausedAtMs) && (!Number.isFinite(resumedAtMs) || pausedAtMs > resumedAtMs)
     ? pausedAtMs
     : endedAtMs;
-  const rows = [["Record type", "Meeting code", "Session started (UTC)", "Session ended (UTC)", "Participant", "Final status", "Active duration estimate", "Away duration estimate"]];
+  const rows = [["Record type", "Meeting code", "Session started (UTC)", "Session ended (UTC)", "Participant", "Final status", "Active duration estimate", "Away duration estimate", "Last activity confirmation (UTC)"]];
   let activeTotalMs = 0;
   let awayTotalMs = 0;
   const participants = participantDocs.map((participantDoc) => {
@@ -248,11 +293,15 @@ function createAttendanceCsv(session, participantDocs, endedAtMs) {
       : signalAgeMs <= STALE_AFTER_MS && ["active", "away"].includes(student.status)
         ? student.status === "active" ? "Active" : "Away"
         : "Not reporting";
+    const checkInAtMs = student.runId === session.runId && student.checkInCycleId === session.checkInCycleId
+      ? toMillis(student.checkInAt)
+      : Number.NaN;
     return ["Participant", session.meetCode, startedAt, endedAt, student.name || "Meet participant", finalStatus,
       hasDurationData ? formatDuration(activeMs) : "Unavailable in this extension version",
-      hasDurationData ? formatDuration(awayMs) : "Unavailable in this extension version"];
+      hasDurationData ? formatDuration(awayMs) : "Unavailable in this extension version",
+      Number.isFinite(checkInAtMs) ? new Date(checkInAtMs).toISOString() : ""];
   });
-  rows.push(["Known attendee duration total", session.meetCode, startedAt, endedAt, "", "", formatDuration(activeTotalMs), formatDuration(awayTotalMs)]);
+  rows.push(["Known attendee duration total", session.meetCode, startedAt, endedAt, "", "", formatDuration(activeTotalMs), formatDuration(awayTotalMs), ""]);
   rows.push(...participants);
   return `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
 }
@@ -390,6 +439,12 @@ function updateControls() {
   hostControls.hidden = !isHost;
   hostDashboard.hidden = !isHost;
   participantView.hidden = isHost;
+  checkInSettings.hidden = !isHost;
+  if (isHost) {
+    checkInIntervalSelect.value = String(sessionData?.checkInIntervalMinutes ?? selectedCheckInInterval);
+    selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;
+    checkInIntervalSelect.disabled = sessionData?.status === "ended" || Boolean(pendingAction);
+  }
   refreshHostDetectionButton.hidden = !meetCode || hostControlsVisible
     || Boolean(sessionData?.hostUid && user?.uid && sessionData.hostUid !== user.uid);
   signInButton.hidden = !hostControlsVisible || isGoogleUser
@@ -509,6 +564,20 @@ retryParticipantErrorButton.addEventListener("click", retryPopupError);
 function renderUI() {
   scheduleStalenessRefresh();
   const students = studentsData.map((student) => ({ ...student, displayStatus: getDisplayStatus(student) }));
+  const reportedNameCounts = new Map();
+  for (const student of studentsData) {
+    const key = normalizeParticipantName(student.name);
+    reportedNameCounts.set(key, (reportedNameCounts.get(key) || 0) + 1);
+  }
+  const rosterNameCounts = new Map();
+  for (const name of rosterNames) {
+    const key = normalizeParticipantName(name);
+    const rosterSeen = (rosterNameCounts.get(key) || 0) + 1;
+    rosterNameCounts.set(key, rosterSeen);
+    if (rosterSeen > (reportedNameCounts.get(key) || 0)) {
+      students.push({ name, displayStatus: "untracked", fromRoster: true });
+    }
+  }
   const total = students.length;
   const activeCount = students.filter((student) => student.displayStatus === "active").length;
   const awayCount = students.filter((student) => student.displayStatus === "away").length;
@@ -550,6 +619,15 @@ function renderUI() {
           : "Not reporting";
     badge.append(dot, document.createTextNode(statusLabel));
     statusCell.appendChild(badge);
+    const checkInRound = currentCheckInRound();
+    if (checkInRound && !student.fromRoster) {
+      const confirmed = student.checkInCycleId === sessionData?.checkInCycleId
+        && student.checkInRound === checkInRound;
+      const checkInLabel = document.createElement("span");
+      checkInLabel.className = `check-in-state${confirmed ? " confirmed" : " pending"}`;
+      checkInLabel.textContent = confirmed ? "Confirmed" : "Awaiting check-in";
+      statusCell.appendChild(checkInLabel);
+    }
     row.append(nameCell, statusCell);
     studentTableBody.appendChild(row);
   }
@@ -562,6 +640,12 @@ function stopListeners() {
   stopStudentsListener = null;
   sessionData = null;
   studentsData = [];
+  rosterNames = [];
+  activityCheckIn.hidden = true;
+  if (checkInRefreshTimer !== null) {
+    clearInterval(checkInRefreshTimer);
+    checkInRefreshTimer = null;
+  }
   renderUI();
 }
 
@@ -581,6 +665,11 @@ function listenToMeeting() {
     clearPopupError("session-read");
     sessionData = snapshot.exists() ? snapshot.data() : null;
     updateControls();
+    updateParticipantCheckIn();
+    if (checkInRefreshTimer !== null) clearInterval(checkInRefreshTimer);
+    checkInRefreshTimer = sessionData?.status === "running" && Number(sessionData.checkInIntervalMinutes) > 0
+      ? setInterval(() => { updateParticipantCheckIn(); renderUI(); }, 5_000)
+      : null;
 
     stopStudentsListener?.();
     stopStudentsListener = null;
@@ -663,13 +752,26 @@ btnStart.addEventListener("click", async () => {
   await runSessionAction(btnStart, sessionData?.status === "paused" ? "Resuming…" : "Starting…", async () => {
     const sessionRef = doc(db, "sessions", meetCode);
     if (!sessionData) {
-      await setDoc(sessionRef, { meetCode, hostUid: user.uid, runId: crypto.randomUUID(), status: "running", startedAt: serverTimestamp(), resumedAt: serverTimestamp() });
+      await setDoc(sessionRef, {
+        meetCode,
+        hostUid: user.uid,
+        runId: crypto.randomUUID(),
+        status: "running",
+        startedAt: serverTimestamp(),
+        resumedAt: serverTimestamp(),
+        checkInIntervalMinutes: selectedCheckInInterval,
+        checkInCycleId: crypto.randomUUID(),
+        checkInCycleStartedAt: serverTimestamp()
+      });
     } else if (sessionData.hostUid === user.uid) {
       const nextRun = sessionData.status === "ended";
       await updateDoc(sessionRef, {
         status: "running",
         ...(nextRun ? { runId: crypto.randomUUID(), startedAt: serverTimestamp() } : {}),
-        resumedAt: serverTimestamp()
+        resumedAt: serverTimestamp(),
+        checkInIntervalMinutes: selectedCheckInInterval,
+        checkInCycleId: crypto.randomUUID(),
+        checkInCycleStartedAt: serverTimestamp()
       });
     }
   }, "Could not start tracking");
@@ -696,14 +798,50 @@ btnDownloadAttendance.addEventListener("click", async () => {
 
 searchInput.addEventListener("input", (event) => { searchQuery = event.target.value.trim(); renderUI(); });
 statusFilter.addEventListener("change", (event) => { currentFilter = event.target.value; renderUI(); });
+checkInIntervalSelect.addEventListener("change", async () => {
+  selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;
+  if (!sessionData || !user || sessionData.hostUid !== user.uid) return;
+  try {
+    await updateDoc(doc(db, "sessions", meetCode), {
+      checkInIntervalMinutes: selectedCheckInInterval,
+      checkInCycleId: crypto.randomUUID(),
+      checkInCycleStartedAt: serverTimestamp()
+    });
+    setNotice(selectedCheckInInterval ? `Activity confirmations requested every ${selectedCheckInInterval} minutes.` : "Activity confirmations are off.");
+  } catch (error) {
+    showPopupError(`Could not update activity check-ins: ${error.message}`, "session-action", listenToMeeting);
+  }
+});
+
+confirmActivityButton.addEventListener("click", async () => {
+  if (confirmActivityButton.disabled) return;
+  const round = currentCheckInRound();
+  const cycleId = sessionData?.checkInCycleId;
+  confirmActivityButton.disabled = true;
+  confirmActivityButton.textContent = "Sending…";
+  try {
+    await retryContentAction("check-in", { round, cycleId });
+    clearPopupError("activity-check-in");
+    confirmActivityButton.textContent = "Confirmed";
+    activityCheckIn.hidden = true;
+    updateParticipantCheckIn();
+  } catch (error) {
+    showPopupError(`Could not confirm activity: ${error.message}`, "activity-check-in", () => retryContentAction("check-in", { round, cycleId }));
+  } finally {
+    confirmActivityButton.disabled = false;
+    if (!activityCheckIn.hidden) confirmActivityButton.textContent = "I'm here";
+  }
+});
 
 function useActiveTab(tab) {
   const nextMeetCode = getMeetCode(tab?.url);
+  activeMeetTabId = tab?.id ?? null;
   if (nextMeetCode === meetCode) {
     refreshHostUiRole(tab?.id);
     return;
   }
   meetCode = nextMeetCode;
+  rosterNames = [];
   hostControlsVisible = false;
   listenToMeeting();
   updateControls();
@@ -739,7 +877,9 @@ async function refreshHostUiRole(tabId, { retry = false, showResult = false } = 
   }
   if (hostDetectionRequestId !== requestId) return;
   hostControlsVisible = Boolean(result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode);
+  rosterNames = hostControlsVisible && Array.isArray(result?.participantNames) ? result.participantNames : [];
   updateControls();
+  renderUI();
   if (showResult && !hostControlsVisible) {
     setParticipantNotice("Host controls still not detected", result
       ? "Open Host controls in Google Meet, then refresh here. If you just loaded the extension, reload the Meet tab first."

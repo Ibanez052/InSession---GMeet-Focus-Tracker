@@ -1,6 +1,6 @@
 # InSession – GMeet Focus Tracker
 
-A Chrome (Manifest V3) extension for Google Meet that shows whether participants are in the Meet tab or somewhere else. Each participant's extension reports its own status to Firestore, and the host's side panel shows a live attendance dashboard (Start / Pause / End, search, filter).
+A Chrome (Manifest V3) extension for Google Meet that shows whether participants are in the Meet tab or somewhere else. Each participant's extension reports its own status to Firestore. The host side panel combines those reports with names currently visible in Meet's participant roster and can request periodic participant check-ins.
 
 > **Status: prototype.** This README tracks known issues and planned improvements. Checked items are implemented or no longer apply to the participant self-reporting design.
 
@@ -23,14 +23,14 @@ Before signing in or tracking participants:
 4. In Firebase Authentication's Authorized domains settings, add `chrome-extension://<your-extension-id>`.
 5. Deploy the included Firestore rules with the Firebase CLI: `firebase deploy --only firestore:rules --project insession-d7332`.
 
-The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization. Attendance data is stored in Cloud Firestore (not Firebase Storage) only while a session is active or awaiting a successful export. Ending a session downloads a CSV and then removes the session and attendee documents from Firestore.
+The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; deploy the rules after changes before using affected features. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization. The host's roster names are read from the Meet page and displayed locally; they are not uploaded to Firestore. Activity status and check-in responses come from each participant's extension. Missing reports display as **Not reporting** and do not prove whether someone is present or paying attention. Attendance data is stored in Cloud Firestore (not Firebase Storage) only while a session is active or awaiting a successful export. Ending a session downloads a CSV and then removes the session and attendee documents from Firestore.
 
 ## Current files
 
 | File | Role |
 |---|---|
 | `manifest.json` | MV3 manifest, side panel, service worker, and content script on `meet.google.com` |
-| `src/content/content.js` | Runs in Meet tabs: identity, active-call session listener, and participant self-reporting |
+| `src/content/content.js` | Runs in Meet tabs: host roster display data, participant self-reporting, and activity check-ins |
 | `popup.js` / `popup.html` / `style.css` | Side panel dashboard (Firebase JS SDK, live `onSnapshot` listeners) |
 
 ## Target design
@@ -67,8 +67,7 @@ All fixes below fit one redesign:
 - [x] **4. Quota burn from polling.** Session state uses one Firestore `onSnapshot` listener per participant, opened only while the participant is in an active Meet call. Status heartbeats are written every 30 seconds while tracking is running.
   **Fix:** replace polling with an `onSnapshot` on the session doc and stop listening outside active calls.
 
-- [x] **5. Participant scraper runs on every client.** The scraper described in the original review is no longer present. Participants report their own status from their extension; the dashboard does not scrape the Meet roster.
-  **Resolution:** keep attendance self-reported. A host-only roster scraper is not part of the current design.
+- [x] **5. Participant scraper runs on every client.** Only the host's Meet tab reads names currently rendered in the roster; these names stay local to the host dashboard. Activity status and check-in responses remain participant self-reported. Meet's page markup can change, and names not currently rendered may not appear.
 
 ## B. Wrong or inconsistent data
 
@@ -80,9 +79,9 @@ All fixes below fit one redesign:
 - [x] **8. Doc ID collisions.** Names are reduced to `[a-z0-9]`, so "José" becomes `jos_`, non-Latin names collapse to underscores, and "Ana-Maria" and "Ana Maria" collide.
   **Fix:** use the auth `uid` as the doc ID and store the name as a field.
 
-- [x] **9. Scraped and self-reported entries can duplicate.** This no longer applies: InSession does not scrape the participant roster; each installed extension reports its own attendee record.
+- [x] **9. Scraped and self-reported entries can duplicate.** The dashboard matches visible roster names to reports by normalized display name. Duplicate names or display-name differences can prevent exact matching.
 
-- [x] **10. Scraped people show "Active" without being monitored.** This no longer applies because there are no scraped attendee records.
+- [x] **10. Scraped people show "Active" without being monitored.** Roster-only names show **Not reporting**; only participant extensions supply Active/Away status.
 
 - [x] **11. The instructor appears as a student** because their own content script also reports status. The content script skips host status reports, and the dashboard filters and removes any stale host student record.
   **Fix:** skip reporting when `uid === hostUid`; clean up legacy host records from the student list.
@@ -125,7 +124,7 @@ All fixes below fit one redesign:
   }
   ```
   The `status == "running"` check also stops students being recreated after End. Rule `get()` calls count as reads, so keep heartbeats at 30 s or slower.
-  **Deployment:** this branch adds duration fields and run ID validation to participant writes. Redeploy `firestore.rules` after merging this change.
+  **Deployment:** rules validate duration fields, run IDs, and activity-check-in fields. Redeploy `firestore.rules` after merging changes to them.
 
 - [x] **19. Host and participant UI roles.** The side panel offers instructor sign-in and host controls when the Meet page exposes host-control labels. The participant view includes a retry button for delayed or missed detection. This depends on Meet's UI markup and is not a security boundary: Firestore rules cannot verify the role signal, and a determined signed-in user could bypass the extension UI.
   **Deployment:** redeploy `firestore.rules` after merging rule changes. The current rules require Google sign-in and preserve session ownership, but do not independently verify the actual Meet host.
@@ -135,15 +134,15 @@ All fixes below fit one redesign:
 
 - [x] **21. Firebase API key is public in the repo.** This is expected for client-side Firebase configuration. Firestore rules protect data access; the key is not an authorization secret.
 
-- [x] **22. Participant privacy notice and retention.** The notice explains the data shared and the cleanup flow. The host downloads attendance when ending the session; Firestore records are deleted only after Chrome confirms the CSV download. If the download fails or is canceled, the ended session remains available for retry.
+- [x] **22. Participant privacy notice and retention.** The notice explains shared status and check-in response times. The host downloads attendance when ending the session; Firestore records are deleted only after Chrome confirms the CSV download. If the download fails or is canceled, the ended session remains available for retry.
 
-- [x] **23. Clients can be spoofed or disabled.** Firestore rules require participant writes to use that participant's authenticated UID. Missing or stale heartbeats display as **Not reporting**, rather than Active or Away. A user can still disable or modify their own extension; client self-reporting cannot prove attendance or enforce that the extension remains enabled.
+- [x] **23. Clients can be spoofed or disabled.** Firestore rules require participant writes to use that participant's authenticated UID. Missing or stale heartbeats display as **Not reporting**, rather than Active or Away. Instructor-selected check-ins show whether a participant clicked to confirm; they cannot prove attention or prevent disabling/modifying the extension.
 
 ## E. Features and UX
 
 - [x] **24. Silent failures.** Firebase session/attendee listener errors, participant authentication and status-write failures, host actions, and cleanup errors are logged and shown in the side panel. Recoverable connection and action errors have a retry control, and the extension action shows a red `!` badge until its reported error source succeeds or is retried.
 
-- [x] **25. Ending a session deletes everything.** Ending now exports a CSV with each participant's final status and estimated active/away time, then deletes session and attendee records from Firestore after the download completes. Durations are heartbeat-based estimates, not exact timers. The downloaded CSV is the host's attendance record; InSession does not keep server-side session history. Participants need the updated extension for duration estimates; older clients still appear in the export, but their duration values are marked unavailable.
+- [x] **25. Ending a session deletes everything.** Ending exports a CSV with each participant's final status, estimated active/away time, and latest activity-confirmation time, then deletes session and attendee records from Firestore after the download completes. Durations are heartbeat-based estimates, not exact timers. The downloaded CSV is the host's attendance record; InSession does not keep server-side session history. Participants need the updated extension for duration estimates and check-ins; older clients still appear in the export, but their duration values are marked unavailable.
 
 - [x] **26. Manual status override fights live reports.**
   **Fix:** store it as a separate `override` field with a visible marker, add an undo, or remove the feature.

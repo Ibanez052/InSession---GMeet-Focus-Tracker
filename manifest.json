@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "InSession – GMeet Focus Tracker",
   "version": "1.0",
-  "description": "Shows Google Meet participant focus status during a session.",
+  "description": "Shows participant focus status and instructor-configurable activity check-ins during Google Meet sessions.",
   "permissions": ["identity", "activeTab", "storage", "sidePanel", "downloads"],
   "background": {
     "service_worker": "dist/src/background/service-worker.js"

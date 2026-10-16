@@ -120,6 +120,47 @@
       font-size: 14px;
       line-height: 1.55;
     }
+    .activity-check-in {
+      width: min(100%, 340px);
+      margin: 18px auto 0;
+      padding: 14px;
+      border: 1px solid #e6c46c;
+      border-radius: 10px;
+      background: #fff9e7;
+      color: #493b17;
+      text-align: left;
+    }
+    .activity-check-in .btn { width: 100%; margin-top: 12px; }
+    .check-in-settings {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #315c7d;
+      font-size: 12px;
+    }
+    .check-in-settings select {
+      min-width: 0;
+      padding: 7px 9px;
+      border: 1px solid #d7e0e8;
+      border-radius: 8px;
+      background: #fff;
+      color: #17324d;
+    }
+    .check-in-state {
+      display: block;
+      margin-top: 5px;
+      color: #647078;
+      font-size: 11px;
+    }
+    .check-in-state.confirmed { color: #16776c; }
+    .check-in-state.pending { color: #9a6711; }
+    .roster-source-note {
+      flex-basis: 100%;
+      margin: -2px 0 0;
+      color: #647078;
+      font-size: 11px;
+      line-height: 1.4;
+    }
 
     .refresh-role-btn {
       min-height: 38px;
