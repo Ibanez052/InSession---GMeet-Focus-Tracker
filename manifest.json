@@ -3,12 +3,13 @@
   "name": "InSession – GMeet Focus Tracker",
   "version": "1.0",
   "description": "Shows Google Meet participant focus status during a session.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5SfFxBHBVrU7zcji/JM1t1U5Dr6wKBIy1hLANvzgHuzIMysEWtn77zbmVW8Sv5mP9nvSMRrhwW+MeXezVFNhLflISVYspCZcw9YyOrIEm9P+4Ilc91ZrM9vVbTDu0MTkIyX2E8XY2J60yrdO+B1N97RH1AjogEUekdyhf7+sparkM9AYpiFGwSLuAF0uMt7Z+R6VAmFSYO2Z2FlznpXsAk8tCDwCKWm14cNHZmhsdEtcIzkj5YXb6Ga4OJ+ceD0sulSvMqXrC7Q/joSaqabw3HitY0jv+QMgQDKtcFkvQMcOjusSNv3iahST/Sq9ab7sNg04tPWs5/OFZwS6USCcfQIDAQAB",
   "permissions": ["identity", "activeTab", "storage", "sidePanel", "downloads"],
   "background": {
     "service_worker": "dist/src/background/service-worker.js"
   },
   "oauth2": {
-    "client_id": "433861086598-lssi7ehea8ij8339c7d4197ksmhv5j92.apps.googleusercontent.com",
+    "client_id": "433861086598-277ccjc52p5jf0g8iru6hmdom65bfk1v.apps.googleusercontent.com",
     "scopes": ["openid", "email", "profile"]
   },
   "action": {
