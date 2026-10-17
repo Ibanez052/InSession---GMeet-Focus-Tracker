@@ -32,7 +32,7 @@ Before signing in or tracking participants:
 3. In Firebase Authentication's Authorized domains settings, add `chrome-extension://beihnncofapjnpgfkphgocbdkigiedod`. Keep the old extension domain while existing installs still use it.
 5. Deploy the included Firestore rules with the Firebase CLI: `firebase deploy --only firestore:rules --project insession-d7332`.
 
-If Google sign-in is in Testing mode, each instructor must also be listed as a test user.
+The extension requests only the basic Google identity scopes `openid`, `email`, and `profile`. Google allows users of apps requesting only these scopes to sign in without being added as test users, though Testing mode can still show a testing warning. Switching the OAuth consent screen to **In production** is separate from publishing the extension in the Chrome Web Store.
 
 The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization. Attendance data is stored in Cloud Firestore (not Firebase Storage) only while a session is active or awaiting a successful export. Ending a session downloads a CSV and then removes the session and attendee documents from Firestore.
 
