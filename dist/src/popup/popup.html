@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InSession</title>
+  <link rel="stylesheet" href="style.css" />
+  
+</head>
+<body>
+
+  <div class="app-window">
+    <!-- Top Bar -->
+    <header>
+      <div class="brand-container">
+        <span class="brand-name">InSession</span>
+      </div>
+      <div class="auth-controls">
+        <span id="account-status" role="status">Connecting…</span>
+        <button type="button" id="sign-in" class="logout-btn" aria-label="Sign in with Google as the instructor">Sign in as instructor</button>
+        <button type="button" id="sign-out" class="logout-btn" hidden>Sign out</button>
+      </div>
+    </header>
+
+    <!-- Main Body Area -->
+    <main>
+      <section id="participant-view" class="participant-view" aria-live="polite">
+        <span class="participant-mark" aria-hidden="true">✓</span>
+        <h1 id="participant-heading">Connecting to your meeting…</h1>
+        <p id="participant-message">Your attendance status is reported automatically while the instructor's session is running.</p>
+        <button type="button" id="retry-participant-error" class="refresh-role-btn" hidden>Retry connection</button>
+        <button type="button" id="refresh-host-detection" class="refresh-role-btn" hidden>Refresh host detection</button>
+      </section>
+
+      <div id="host-dashboard" class="dashboard-content" hidden>
+      <!-- Stats Counters -->
+      <section class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-title">Attendees</div>
+          <div class="stat-number" id="attendee-count">–</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title">Active</div>
+          <div class="stat-number" id="active-count">–</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-title">Away</div>
+          <div class="stat-number" id="away-count">–</div>
+        </div>
+      </section>
+
+      <!-- Gray Controls & Records Wrapper -->
+      <section class="panel-container">
+        <!-- Actions & Filter Tools -->
+        <div class="toolbar">
+          <div class="action-buttons" id="host-controls" hidden>
+            <button type="button" class="btn btn-start">Start</button>
+            <button type="button" class="btn btn-pause">Pause</button>
+            <button type="button" class="btn btn-end">End</button>
+            <button type="button" id="download-attendance" class="btn btn-download" hidden>Download CSV &amp; delete data</button>
+          </div>
+          <p id="session-notice" role="status" hidden></p>
+          <button type="button" id="retry-session-error" class="btn btn-pause" hidden>Retry connection</button>
+
+          <div class="filter-tools">
+            <div class="search-wrapper">
+              <!-- Magnifying Glass Icon -->
+              <img src="../../assets/search-icon.png" alt="" aria-hidden="true" class="search-icon" />
+              <input type="search" class="search-input" aria-label="Search participants by name" placeholder="Search participant" />
+            </div>
+
+            <!-- Filter Dropdown Container -->
+            <label class="sr-only" for="status-filter">Filter participants by status</label>
+            <div class="filter-select-wrap">
+              <img src="../../assets/bars-filter.png" alt="" aria-hidden="true" class="filter-icon" />
+              <select class="filter-select" id="status-filter">
+                <option value="all">Show all</option>
+                <option value="active">Active</option>
+                <option value="away">Away</option>
+                <option value="left">Left</option>
+                <option value="untracked">Not reporting</option>
+              </select>
+            </div>
+            
+          </div>
+        </div>
+
+        <!-- Participants Table -->
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th class="col-student" scope="col">Student</th>
+                <th class="col-status" scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody id="studentTableBody">
+              <tr>
+                <td colspan="2" class="table-loading-cell">
+                  Connecting to live database...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

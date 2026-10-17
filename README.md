@@ -4,24 +4,35 @@ A Chrome (Manifest V3) extension for Google Meet that shows whether participants
 
 > **Status: prototype.** This README tracks known issues and planned improvements. Checked items are implemented or no longer apply to the participant self-reporting design.
 
-## Build and Firebase setup
+## Install for groupmates
 
-The Firebase SDK is bundled locally. Install dependencies and build the unpacked extension with Node.js and npm:
+The repository includes the built extension, so groupmates do not need Node.js or npm to install it:
+
+1. Clone or download this repository.
+2. Open `chrome://extensions` and turn on **Developer mode**.
+3. Choose **Load unpacked** and select the repository folder containing this README and the top-level `manifest.json`.
+
+The public `key` in `manifest.json` pins the same development extension ID for everyone. Do not remove or replace it. The `dist/` folder is committed; Chrome loads the built files from there.
+
+When changing extension code, rebuild and commit the updated `dist/` folder too:
 
 ```sh
 npm ci
 npm run build
 ```
 
-For local development, keep the extension loaded from the repository root (the folder containing the top-level `manifest.json`). Clicking the extension's toolbar icon opens its dashboard in Chrome's side panel. The root manifest points Chrome at the bundled side panel, content script, and service worker in `dist/`, so rebuilding does not change the extension ID used by OAuth. The generated `dist/` folder also contains a standalone manifest for packaging; loading that folder separately creates a different unpacked-extension ID unless a stable manifest key is configured.
+For development, keep the extension loaded from the repository root. Clicking its toolbar icon opens the side panel.
+
+## One-time Firebase and Google sign-in setup
 
 Before signing in or tracking participants:
 
 1. In Firebase Authentication, enable **Google** and **Anonymous** sign-in providers.
-2. In the Google Cloud project associated with Firebase, create an OAuth client of type **Chrome Extension**. Enter the extension ID shown in `chrome://extensions` as its Item ID. Google will generate a separate client ID ending in `.apps.googleusercontent.com`.
-3. Set the generated Chrome Extension OAuth client ID in `manifest.json`, then rebuild the extension.
-4. In Firebase Authentication's Authorized domains settings, add `chrome-extension://<your-extension-id>`.
+2. The Google Cloud OAuth client must be type **Chrome Extension** with Item ID `beihnncofapjnpgfkphgocbdkigiedod`. Its client ID is already configured in `manifest.json`; the client secret is not used by this extension.
+3. In Firebase Authentication's Authorized domains settings, add `chrome-extension://beihnncofapjnpgfkphgocbdkigiedod`. Keep the old extension domain while existing installs still use it.
 5. Deploy the included Firestore rules with the Firebase CLI: `firebase deploy --only firestore:rules --project insession-d7332`.
+
+The extension requests only the basic Google identity scopes `openid`, `email`, and `profile`. Google allows users of apps requesting only these scopes to sign in without being added as test users, though Testing mode can still show a testing warning. Switching the OAuth consent screen to **In production** is separate from publishing the extension in the Chrome Web Store.
 
 The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; do not use the extension until those rules have been deployed. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization. Attendance data is stored in Cloud Firestore (not Firebase Storage) only while a session is active or awaiting a successful export. Ending a session downloads a CSV and then removes the session and attendee documents from Firestore.
 
