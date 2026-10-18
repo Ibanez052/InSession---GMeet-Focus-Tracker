@@ -29738,7 +29738,8 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   } else if (message?.type === "in-session:clear-error") {
     clearPopupError(message.source || "unknown");
   } else if (message?.type === "in-session:roster-update" && sender.tab?.id === activeMeetTabId && message.meetCode === meetCode && hostControlsVisible) {
-    rosterNames = Array.isArray(message.participantNames) ? message.participantNames : [];
+    const freshNames = Array.isArray(message.participantNames) ? message.participantNames.map(cleanMeetName).filter(Boolean) : [];
+    if (freshNames.length) rosterNames = freshNames;
     renderUI();
   }
 });
@@ -29757,8 +29758,11 @@ chrome.runtime.sendMessage({ type: "in-session:get-errors" }, (errors) => {
 function toMillis(value) {
   return typeof value?.toMillis === "function" ? value.toMillis() : value instanceof Date ? value.getTime() : Number.NaN;
 }
+function cleanMeetName(name4) {
+  return String(name4 || "").replace(/(?:^|\s)More(?:\s+actions?)?\s*$/i, " ").replace(/\s+/g, " ").trim();
+}
 function normalizeParticipantName(name4) {
-  return String(name4 || "").normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+  return cleanMeetName(name4).normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 }
 function normalizeNameForIdentityMatch(name4) {
   return String(name4 || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/).filter(Boolean).sort().join(" ");
@@ -29824,7 +29828,10 @@ function createAttendanceCsv(session, participantDocs, endedAtMs, availableRoste
   const trackingEndedAtMs = Number.isFinite(pausedAtMs) && (!Number.isFinite(resumedAtMs) || pausedAtMs > resumedAtMs) ? pausedAtMs : endedAtMs;
   const rows = [["Participant", "Final status", "Active duration estimate", "Away duration estimate", "Last activity confirmation (UTC)", "Meeting code", "Session started (UTC)", "Session ended (UTC)"]];
   const participantData = resolveFallbackParticipantNames(
-    participantDocs.map((participantDoc) => participantDoc.data()),
+    participantDocs.map((participantDoc) => {
+      const student = participantDoc.data();
+      return { ...student, name: cleanMeetName(student.name) };
+    }),
     availableRosterNames
   );
   const participants = participantData.map((student) => {
@@ -30085,7 +30092,8 @@ function renderUI() {
   scheduleStalenessRefresh();
   const signedInHostName = isGoogleAccount(user) ? normalizeNameForIdentityMatch(user.displayName) : "";
   const availableRosterNames = rosterNames.filter((name4) => normalizeNameForIdentityMatch(name4) !== signedInHostName);
-  const reconciledStudents = resolveFallbackParticipantNames(studentsData, availableRosterNames);
+  const cleanedStudents = studentsData.map((student) => ({ ...student, name: cleanMeetName(student.name) }));
+  const reconciledStudents = resolveFallbackParticipantNames(cleanedStudents, availableRosterNames);
   const students = reconciledStudents.map((student) => ({ ...student, displayStatus: getDisplayStatus(student) }));
   const reportedNameCounts = /* @__PURE__ */ new Map();
   for (const student of students) {
@@ -30398,7 +30406,7 @@ async function refreshHostUiRole(tabId, { retry = false, showResult = false } = 
   }
   if (hostDetectionRequestId !== requestId) return;
   hostControlsVisible = Boolean(result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode);
-  rosterNames = hostControlsVisible && Array.isArray(result?.participantNames) ? result.participantNames : [];
+  rosterNames = hostControlsVisible && Array.isArray(result?.participantNames) ? result.participantNames.map(cleanMeetName).filter(Boolean) : [];
   void resolvePendingHostTransfer();
   updateControls();
   renderUI();
