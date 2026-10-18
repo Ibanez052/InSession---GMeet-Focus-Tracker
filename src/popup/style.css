@@ -19,7 +19,6 @@
     }
     #session-notice.error { color: #a4313b; border-color: #f2d3d5; background: #fff7f7; }
     #retry-session-error { align-self: flex-start; }
-    .refresh-attendance-btn { align-self: flex-start; }
     .empty-state { text-align: center; padding: 24px; color: #666; }
     .table-loading-cell { padding: 24px; color: #888; text-align: center; }
 
@@ -384,6 +383,7 @@
       position: relative;
       display: flex;
       align-items: center;
+      min-width: 0;
     }
 
     .filter-icon {
@@ -406,7 +406,34 @@
       pointer-events: none;
     }
 
+    .filter-select-wrap:has(#refresh-attendance:not([hidden]))::after { right: 56px; }
+
+    .refresh-attendance-btn {
+      display: inline-flex;
+      flex: 0 0 36px;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 38px;
+      margin-left: 6px;
+      padding: 0;
+      border: 1px solid #cbdad6;
+      border-radius: 10px;
+      background: #fff;
+      color: #315c7d;
+      cursor: pointer;
+    }
+
+    .refresh-attendance-btn:hover:not(:disabled) { background: #f2f6f5; }
+    .refresh-attendance-btn:focus-visible { outline: 3px solid rgb(106 180 169 / 35%); outline-offset: 2px; }
+    .refresh-attendance-btn:disabled { cursor: wait; opacity: .65; }
+    .refresh-attendance-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .refresh-attendance-btn.is-refreshing svg { animation: refresh-spin 900ms linear infinite; }
+    @keyframes refresh-spin { to { transform: rotate(360deg); } }
+
     .filter-select {
+      flex: 1 1 auto;
+      min-width: 0;
       width: 100%;
       appearance: none;
       border: 1px solid #d5dfdc;

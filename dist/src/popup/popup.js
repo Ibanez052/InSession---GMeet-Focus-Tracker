@@ -29983,7 +29983,11 @@ function updateControls() {
   requestCheckInButton.textContent = pendingAction === requestCheckInButton ? pendingActionLabel : "Check in now";
   refreshAttendanceButton.hidden = !isHost || sessionData?.status !== "running";
   refreshAttendanceButton.disabled = Boolean(pendingAction);
-  refreshAttendanceButton.textContent = pendingAction === refreshAttendanceButton ? pendingActionLabel : "Refresh participant statuses";
+  const refreshingAttendance = pendingAction === refreshAttendanceButton;
+  const refreshAttendanceLabel = refreshingAttendance ? "Requesting participant status updates" : "Refresh participant statuses";
+  refreshAttendanceButton.setAttribute("aria-label", refreshAttendanceLabel);
+  refreshAttendanceButton.title = refreshAttendanceLabel;
+  refreshAttendanceButton.classList.toggle("is-refreshing", refreshingAttendance);
   if (isHost) {
     checkInIntervalSelect.value = String(sessionData?.checkInIntervalMinutes ?? selectedCheckInInterval);
     selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;

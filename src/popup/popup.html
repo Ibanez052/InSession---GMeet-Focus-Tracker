@@ -73,7 +73,6 @@
             <button type="button" id="request-check-in" class="refresh-role-btn request-check-in-btn" hidden>Check in now</button>
           </div>
           <p id="session-notice" role="status" hidden></p>
-          <button type="button" id="refresh-attendance" class="refresh-role-btn refresh-attendance-btn" hidden>Refresh participant statuses</button>
           <button type="button" id="retry-session-error" class="btn btn-pause" hidden>Retry connection</button>
 
           <div class="filter-tools">
@@ -94,6 +93,9 @@
                 <option value="left">Left</option>
                 <option value="untracked">Not reporting</option>
               </select>
+              <button type="button" id="refresh-attendance" class="refresh-attendance-btn" aria-label="Refresh participant statuses" title="Refresh participant statuses" hidden>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8 8 0 0 0-14.9-3M4 4v4h4M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4" /></svg>
+              </button>
             </div>
             
           </div>
