@@ -29,6 +29,8 @@ const DURATION_STALE_AFTER_MS = 60000;
 let meetCode = null;
 let session = null;
 let currentRunId = null;
+let lastStatusRefreshId = null;
+let hasSeenSessionSnapshot = false;
 let currentUid = null;
 let currentName = null;
 let storedHostUid = null;
@@ -368,6 +370,8 @@ function listenForSession() {
   }
   session = null;
   currentRunId = null;
+  lastStatusRefreshId = null;
+  hasSeenSessionSnapshot = false;
   lastStatus = null;
   lastHeartbeatAt = 0;
   if (awayTimer !== null) {
@@ -380,6 +384,11 @@ function listenForSession() {
   stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
     clearExtensionError("participant-session");
     session = snapshot.exists() ? snapshot.data() : null;
+    const refreshRequested = hasSeenSessionSnapshot
+      && Boolean(session?.statusRefreshId)
+      && session.statusRefreshId !== lastStatusRefreshId;
+    lastStatusRefreshId = session?.statusRefreshId ?? null;
+    hasSeenSessionSnapshot = true;
     chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
       checkInAck = activityCheckInAcks?.[meetCode] ?? null;
       updateCheckInBadge();
@@ -423,7 +432,7 @@ function listenForSession() {
     if (heartbeatTimer === null) {
       heartbeatTimer = setInterval(() => scheduleStatusReport(true), HEARTBEAT_MS);
     }
-    scheduleStatusReport();
+    scheduleStatusReport(refreshRequested);
   }, (error) => reportExtensionError("participant-session", error, "session"));
 }
 

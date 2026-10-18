@@ -19,6 +19,7 @@
     }
     #session-notice.error { color: #a4313b; border-color: #f2d3d5; background: #fff7f7; }
     #retry-session-error { align-self: flex-start; }
+    .refresh-attendance-btn { align-self: flex-start; }
     .empty-state { text-align: center; padding: 24px; color: #666; }
     .table-loading-cell { padding: 24px; color: #888; text-align: center; }
 

@@ -29300,6 +29300,8 @@ This typically indicates that your device does not have a healthy Internet conne
   var meetCode = null;
   var session = null;
   var currentRunId = null;
+  var lastStatusRefreshId = null;
+  var hasSeenSessionSnapshot = false;
   var currentUid = null;
   var currentName = null;
   var storedHostUid = null;
@@ -29586,6 +29588,8 @@ This typically indicates that your device does not have a healthy Internet conne
     }
     session = null;
     currentRunId = null;
+    lastStatusRefreshId = null;
+    hasSeenSessionSnapshot = false;
     lastStatus = null;
     lastHeartbeatAt = 0;
     if (awayTimer !== null) {
@@ -29598,6 +29602,9 @@ This typically indicates that your device does not have a healthy Internet conne
     stopSessionListener = onSnapshot(doc(db, "sessions", meetCode), (snapshot) => {
       clearExtensionError("participant-session");
       session = snapshot.exists() ? snapshot.data() : null;
+      const refreshRequested = hasSeenSessionSnapshot && Boolean(session?.statusRefreshId) && session.statusRefreshId !== lastStatusRefreshId;
+      lastStatusRefreshId = session?.statusRefreshId ?? null;
+      hasSeenSessionSnapshot = true;
       chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
         checkInAck = activityCheckInAcks?.[meetCode] ?? null;
         updateCheckInBadge();
@@ -29641,7 +29648,7 @@ This typically indicates that your device does not have a healthy Internet conne
       if (heartbeatTimer === null) {
         heartbeatTimer = setInterval(() => scheduleStatusReport(true), HEARTBEAT_MS);
       }
-      scheduleStatusReport();
+      scheduleStatusReport(refreshRequested);
     }, (error) => reportExtensionError("participant-session", error, "session"));
   }
   function getCurrentStatus() {

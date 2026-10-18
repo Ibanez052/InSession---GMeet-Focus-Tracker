@@ -28,6 +28,7 @@ const statusFilter = byId("status-filter");
 const checkInSettings = byId("check-in-settings");
 const checkInIntervalSelect = byId("check-in-interval");
 const requestCheckInButton = byId("request-check-in");
+const refreshAttendanceButton = byId("refresh-attendance");
 
 let user = null;
 let localParticipantUid = null;
@@ -491,6 +492,9 @@ function updateControls() {
   requestCheckInButton.hidden = !isHost || sessionData?.status !== "running";
   requestCheckInButton.disabled = Boolean(pendingAction);
   requestCheckInButton.textContent = pendingAction === requestCheckInButton ? pendingActionLabel : "Check in now";
+  refreshAttendanceButton.hidden = !isHost || sessionData?.status !== "running";
+  refreshAttendanceButton.disabled = Boolean(pendingAction);
+  refreshAttendanceButton.textContent = pendingAction === refreshAttendanceButton ? pendingActionLabel : "Refresh participant statuses";
   if (isHost) {
     checkInIntervalSelect.value = String(sessionData?.checkInIntervalMinutes ?? selectedCheckInInterval);
     selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;
@@ -562,7 +566,7 @@ async function runSessionAction(button, pendingLabel, action, errorLabel) {
   clearPopupError();
   pendingAction = button;
   pendingActionLabel = pendingLabel;
-  [btnStart, btnPause, btnEnd, btnDownloadAttendance, requestCheckInButton].forEach((control) => {
+  [btnStart, btnPause, btnEnd, btnDownloadAttendance, requestCheckInButton, refreshAttendanceButton].forEach((control) => {
     control.disabled = true;
     control.setAttribute("aria-busy", "true");
   });
@@ -577,7 +581,7 @@ async function runSessionAction(button, pendingLabel, action, errorLabel) {
   } finally {
     pendingAction = null;
     pendingActionLabel = "";
-    [btnStart, btnPause, btnEnd, btnDownloadAttendance, requestCheckInButton].forEach((control) => control.removeAttribute("aria-busy"));
+    [btnStart, btnPause, btnEnd, btnDownloadAttendance, requestCheckInButton, refreshAttendanceButton].forEach((control) => control.removeAttribute("aria-busy"));
     updateControls();
   }
   if (failureNotice) showPopupError(failureNotice, "session-action",
@@ -913,6 +917,16 @@ requestCheckInButton.addEventListener("click", async () => {
     checkInPromptAt: serverTimestamp(),
   }), "Could not request an activity check-in");
   if (completed) setNotice("Activity check-in sent to participants.");
+});
+
+refreshAttendanceButton.addEventListener("click", async () => {
+  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid
+    || sessionData.status !== "running" || pendingAction) return;
+  const completed = await runSessionAction(refreshAttendanceButton, "Requesting updates…", () => updateDoc(doc(db, "sessions", meetCode), {
+    statusRefreshId: crypto.randomUUID(),
+    statusRefreshAt: serverTimestamp(),
+  }), "Could not refresh participant statuses");
+  if (completed) setNotice("Refresh requested. Connected participant extensions should report shortly; offline participants will remain Not reporting.");
 });
 
 function useActiveTab(tab) {
