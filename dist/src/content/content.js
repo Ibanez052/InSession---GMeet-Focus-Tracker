@@ -29306,6 +29306,7 @@ This typically indicates that your device does not have a healthy Internet conne
   var currentName = null;
   var storedHostUid = null;
   var storedHostUidLoaded = false;
+  var hostRecordCleanupKey = null;
   var stopSessionListener = null;
   var meetingActive = false;
   var meetingContextTimer = null;
@@ -29362,6 +29363,7 @@ This typically indicates that your device does not have a healthy Internet conne
   }
   function publishParticipantRoster() {
     if (!meetingActive || !hasMeetHostControls()) return;
+    removeLocalHostAttendanceRecord();
     chrome.runtime.sendMessage({ type: "in-session:roster-update", meetCode, participantNames: getParticipantRoster() }, () => {
       void chrome.runtime.lastError;
     });
@@ -29397,7 +29399,7 @@ This typically indicates that your device does not have a healthy Internet conne
   function getPendingActivityCheckIn() {
     const round = currentCheckInRound();
     const cycleId = session?.checkInCycleId || "";
-    const isParticipant = Boolean(meetingActive && currentUid && session?.hostUid !== currentUid && session?.hostUid !== storedHostUid);
+    const isParticipant = Boolean(meetingActive && currentUid && !isHostClient());
     const periodicPending = Boolean(isParticipant && round && cycleId && !(checkInAck?.meetCode === meetCode && checkInAck?.runId === currentRunId && checkInAck?.cycleId === cycleId && checkInAck?.round === round));
     const instantPending = Boolean(isParticipant && session?.status === "running" && session?.checkInPromptId && !(checkInAck?.meetCode === meetCode && checkInAck?.runId === currentRunId && checkInAck?.promptId === session.checkInPromptId));
     if (!periodicPending && !instantPending) return null;
@@ -29506,6 +29508,9 @@ This typically indicates that your device does not have a healthy Internet conne
   function hasMeetHostControls() {
     return Array.from(document.querySelectorAll(MEET_UI.hostControls)).some((control) => ["aria-label", "title", "data-tooltip"].some((attribute) => MEET_UI.hostControlLabel.test(control.getAttribute(attribute) ?? "")));
   }
+  function isHostClient() {
+    return Boolean(session?.hostUid && (session.hostUid === currentUid || session.hostUid === storedHostUid) || hasMeetHostControls());
+  }
   function isCleanName(value) {
     const name4 = value?.trim();
     return Boolean(name4 && name4.length >= 2 && name4.length <= 80);
@@ -29531,11 +29536,17 @@ This typically indicates that your device does not have a healthy Internet conne
     removeTrackingNotice();
   }
   function removeLocalHostAttendanceRecord() {
-    if (!meetCode || !currentUid || !session?.hostUid || session.hostUid !== storedHostUid && session.hostUid !== currentUid) return;
-    void deleteDoc(doc(db, "sessions", meetCode, "students", currentUid)).catch((error) => console.warn("[InSession] Could not remove this host's participant record:", error));
+    if (!meetCode || !currentUid || !session?.hostUid || !isHostClient()) return;
+    const cleanupKey = `${meetCode}:${session.runId || ""}:${currentUid}`;
+    if (hostRecordCleanupKey === cleanupKey) return;
+    hostRecordCleanupKey = cleanupKey;
+    void deleteDoc(doc(db, "sessions", meetCode, "students", currentUid)).catch((error) => {
+      hostRecordCleanupKey = null;
+      console.warn("[InSession] Could not remove this host's participant record:", error);
+    });
   }
   function renderTrackingNotice() {
-    const isHost = Boolean(session?.hostUid && (session.hostUid === currentUid || session.hostUid === storedHostUid));
+    const isHost = isHostClient();
     if (!meetingActive || session?.status !== "running" || !currentUid || isHost) {
       removeTrackingNotice();
       return;
@@ -29622,7 +29633,7 @@ This typically indicates that your device does not have a healthy Internet conne
         lastHeartbeatAt = 0;
       }
       renderTrackingNotice();
-      if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
+      if (session?.status !== "running" || isHostClient()) {
         removeLocalHostAttendanceRecord();
         if (heartbeatTimer !== null) {
           clearInterval(heartbeatTimer);
@@ -29716,13 +29727,13 @@ This typically indicates that your device does not have a healthy Internet conne
     return statusWriteQueue;
   }
   async function writeStatus(forceHeartbeat = false, statusOverride = null, additionalFields = {}) {
-    if (!currentUid || !storedHostUidLoaded || !meetingActive || !session || session.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
+    if (!currentUid || !storedHostUidLoaded || !meetingActive || !session || session.status !== "running" || isHostClient()) return false;
     const name4 = findMyName();
     if (name4) currentName = name4;
     const status = statusOverride ?? getCurrentStatus();
     const reportRunId = currentRunId;
     await ensureDurationState(Date.now());
-    if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
+    if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId || isHostClient()) return false;
     const now = Date.now();
     if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 3e4) return false;
     let nextActiveDurationMs = activeDurationMs;

@@ -35,6 +35,7 @@ let currentUid = null;
 let currentName = null;
 let storedHostUid = null;
 let storedHostUidLoaded = false;
+let hostRecordCleanupKey = null;
 let stopSessionListener = null;
 let meetingActive = false;
 let meetingContextTimer = null;
@@ -116,6 +117,7 @@ function normalizeParticipantName(name) {
 
 function publishParticipantRoster() {
   if (!meetingActive || !hasMeetHostControls()) return;
+  removeLocalHostAttendanceRecord();
   chrome.runtime.sendMessage({ type: "in-session:roster-update", meetCode, participantNames: getParticipantRoster() }, () => { void chrome.runtime.lastError; });
 }
 
@@ -151,7 +153,7 @@ function updateCheckInBadge() {
 function getPendingActivityCheckIn() {
   const round = currentCheckInRound();
   const cycleId = session?.checkInCycleId || "";
-  const isParticipant = Boolean(meetingActive && currentUid && session?.hostUid !== currentUid && session?.hostUid !== storedHostUid);
+  const isParticipant = Boolean(meetingActive && currentUid && !isHostClient());
   const periodicPending = Boolean(isParticipant && round && cycleId && !(
     checkInAck?.meetCode === meetCode
     && checkInAck?.runId === currentRunId
@@ -278,6 +280,11 @@ function hasMeetHostControls() {
       .some((attribute) => MEET_UI.hostControlLabel.test(control.getAttribute(attribute) ?? "")));
 }
 
+function isHostClient() {
+  return Boolean((session?.hostUid && (session.hostUid === currentUid || session.hostUid === storedHostUid))
+    || hasMeetHostControls());
+}
+
 function isCleanName(value) {
   const name = value?.trim();
   return Boolean(name && name.length >= 2 && name.length <= 80);
@@ -308,14 +315,19 @@ function dismissTrackingNotice() {
 }
 
 function removeLocalHostAttendanceRecord() {
-  if (!meetCode || !currentUid || !session?.hostUid
-    || (session.hostUid !== storedHostUid && session.hostUid !== currentUid)) return;
+  if (!meetCode || !currentUid || !session?.hostUid || !isHostClient()) return;
+  const cleanupKey = `${meetCode}:${session.runId || ""}:${currentUid}`;
+  if (hostRecordCleanupKey === cleanupKey) return;
+  hostRecordCleanupKey = cleanupKey;
   void deleteDoc(doc(db, "sessions", meetCode, "students", currentUid))
-    .catch((error) => console.warn("[InSession] Could not remove this host's participant record:", error));
+    .catch((error) => {
+      hostRecordCleanupKey = null;
+      console.warn("[InSession] Could not remove this host's participant record:", error);
+    });
 }
 
 function renderTrackingNotice() {
-  const isHost = Boolean(session?.hostUid && (session.hostUid === currentUid || session.hostUid === storedHostUid));
+  const isHost = isHostClient();
   if (!meetingActive || session?.status !== "running" || !currentUid || isHost) {
     removeTrackingNotice();
     return;
@@ -406,7 +418,7 @@ function listenForSession() {
       lastHeartbeatAt = 0;
     }
     renderTrackingNotice();
-    if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
+    if (session?.status !== "running" || isHostClient()) {
       removeLocalHostAttendanceRecord();
       if (heartbeatTimer !== null) {
         clearInterval(heartbeatTimer);
@@ -508,14 +520,14 @@ function reportStatus(forceHeartbeat = false, statusOverride = null, additionalF
 
 async function writeStatus(forceHeartbeat = false, statusOverride = null, additionalFields = {}) {
   if (!currentUid || !storedHostUidLoaded || !meetingActive || !session || session.status !== "running"
-    || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
+    || isHostClient()) return false;
   const name = findMyName();
   if (name) currentName = name;
   const status = statusOverride ?? getCurrentStatus();
   const reportRunId = currentRunId;
   await ensureDurationState(Date.now());
   if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId
-    || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
+    || isHostClient()) return false;
   const now = Date.now();
   if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return false;
   let nextActiveDurationMs = activeDurationMs;
