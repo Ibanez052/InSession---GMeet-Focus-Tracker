@@ -29763,6 +29763,31 @@ function normalizeParticipantName(name4) {
 function normalizeNameForIdentityMatch(name4) {
   return String(name4 || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/).filter(Boolean).sort().join(" ");
 }
+function resolveFallbackParticipantNames(participants, availableRosterNames) {
+  const genericName = (name4) => !name4 || /^(?:meet(?:ing)? participant|unknown participant)$/i.test(name4.trim());
+  const nameCounts = /* @__PURE__ */ new Map();
+  for (const participant of participants) {
+    if (genericName(participant.name)) continue;
+    const key = normalizeParticipantName(participant.name);
+    nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
+  }
+  const rosterCounts = /* @__PURE__ */ new Map();
+  for (const name4 of availableRosterNames) {
+    const key = normalizeParticipantName(name4);
+    rosterCounts.set(key, (rosterCounts.get(key) || 0) + 1);
+  }
+  const unmatchedRosterNames = [];
+  for (const [key, count] of rosterCounts) {
+    const unmatched = count - (nameCounts.get(key) || 0);
+    for (let index = 0; index < unmatched; index += 1) {
+      unmatchedRosterNames.push(availableRosterNames.find((name4) => normalizeParticipantName(name4) === key));
+    }
+  }
+  const fallbackIndexes = participants.map((participant, index) => genericName(participant.name) ? index : -1).filter((index) => index !== -1);
+  if (fallbackIndexes.length !== 1 || unmatchedRosterNames.length !== 1) return participants;
+  const [participantIndex] = fallbackIndexes;
+  return participants.map((participant, index) => index === participantIndex ? { ...participant, name: unmatchedRosterNames[0] } : participant);
+}
 function currentCheckInRound(now = Date.now()) {
   const interval = Number(sessionData?.checkInIntervalMinutes);
   if (!Number.isFinite(interval) || interval <= 0 || sessionData?.status !== "running") return 0;
@@ -29790,7 +29815,7 @@ function isCurrentRunStudent(student, session) {
   const startedAtMs = toMillis(session.startedAt);
   return Number.isFinite(lastSeenMs) && Number.isFinite(startedAtMs) && lastSeenMs >= startedAtMs;
 }
-function createAttendanceCsv(session, participantDocs, endedAtMs) {
+function createAttendanceCsv(session, participantDocs, endedAtMs, availableRosterNames = []) {
   const startedAtMs = toMillis(session.startedAt);
   const startedAt = Number.isFinite(startedAtMs) ? new Date(startedAtMs).toISOString() : "";
   const endedAt = new Date(endedAtMs).toISOString();
@@ -29798,8 +29823,11 @@ function createAttendanceCsv(session, participantDocs, endedAtMs) {
   const resumedAtMs = toMillis(session.resumedAt);
   const trackingEndedAtMs = Number.isFinite(pausedAtMs) && (!Number.isFinite(resumedAtMs) || pausedAtMs > resumedAtMs) ? pausedAtMs : endedAtMs;
   const rows = [["Participant", "Final status", "Active duration estimate", "Away duration estimate", "Last activity confirmation (UTC)", "Meeting code", "Session started (UTC)", "Session ended (UTC)"]];
-  const participants = participantDocs.map((participantDoc) => {
-    const student = participantDoc.data();
+  const participantData = resolveFallbackParticipantNames(
+    participantDocs.map((participantDoc) => participantDoc.data()),
+    availableRosterNames
+  );
+  const participants = participantData.map((student) => {
     const hasDurationData = typeof student.activeDurationMs === "number" && typeof student.awayDurationMs === "number";
     let activeMs = Math.max(0, Number(student.activeDurationMs) || 0);
     let awayMs = Math.max(0, Number(student.awayDurationMs) || 0);
@@ -29887,7 +29915,9 @@ async function downloadOrClearEndedSession() {
     const currentRunStudents = studentsSnapshot.docs.filter(
       (student) => student.id !== currentSession.hostUid && student.data().uid !== currentSession.hostUid && student.id !== localParticipantUid && student.data().uid !== localParticipantUid && isCurrentRunStudent(student.data(), currentSession)
     );
-    const csv = createAttendanceCsv(currentSession, currentRunStudents, endedAtMs);
+    const hostName = isGoogleAccount(user) ? normalizeNameForIdentityMatch(user.displayName) : "";
+    const exportRosterNames = rosterNames.filter((name4) => normalizeNameForIdentityMatch(name4) !== hostName);
+    const csv = createAttendanceCsv(currentSession, currentRunStudents, endedAtMs, exportRosterNames);
     await downloadAttendanceCsv(csv, currentSession.meetCode || meetCode, endedAtMs);
     await updateDoc(sessionRef, { exportedAt: serverTimestamp() });
     studentsToDelete = studentsSnapshot;
@@ -30053,14 +30083,16 @@ retrySessionErrorButton.addEventListener("click", retryPopupError);
 retryParticipantErrorButton.addEventListener("click", retryPopupError);
 function renderUI() {
   scheduleStalenessRefresh();
-  const students = studentsData.map((student) => ({ ...student, displayStatus: getDisplayStatus(student) }));
+  const signedInHostName = isGoogleAccount(user) ? normalizeNameForIdentityMatch(user.displayName) : "";
+  const availableRosterNames = rosterNames.filter((name4) => normalizeNameForIdentityMatch(name4) !== signedInHostName);
+  const reconciledStudents = resolveFallbackParticipantNames(studentsData, availableRosterNames);
+  const students = reconciledStudents.map((student) => ({ ...student, displayStatus: getDisplayStatus(student) }));
   const reportedNameCounts = /* @__PURE__ */ new Map();
-  for (const student of studentsData) {
+  for (const student of students) {
     const key = normalizeParticipantName(student.name);
     reportedNameCounts.set(key, (reportedNameCounts.get(key) || 0) + 1);
   }
   const rosterNameCounts = /* @__PURE__ */ new Map();
-  const signedInHostName = isGoogleAccount(user) ? normalizeNameForIdentityMatch(user.displayName) : "";
   for (const name4 of rosterNames) {
     const rosterIdentity = normalizeNameForIdentityMatch(name4);
     if (signedInHostName && rosterIdentity === signedInHostName) continue;
