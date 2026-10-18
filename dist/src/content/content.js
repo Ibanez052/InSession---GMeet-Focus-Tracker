@@ -29500,8 +29500,11 @@ This typically indicates that your device does not have a healthy Internet conne
     const language = (document.documentElement.lang || navigator.language || "en").toLowerCase().split("-")[0];
     const labels = MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en;
     const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
-      const label = control.getAttribute("aria-label")?.trim() ?? "";
-      return labels.some((pattern) => pattern.test(label));
+      const labelsOnControl = ["aria-label", "title", "data-tooltip"].map((attribute) => control.getAttribute(attribute)?.trim() ?? "").filter(Boolean);
+      return labelsOnControl.some((rawLabel) => {
+        const label = rawLabel.replace(/\s*\([^)]*\)\s*$/, "").trim();
+        return labels.some((pattern) => pattern.test(label));
+      });
     });
     return Boolean(leaveControl);
   }
@@ -29659,7 +29662,7 @@ This typically indicates that your device does not have a healthy Internet conne
       if (heartbeatTimer === null) {
         heartbeatTimer = setInterval(() => scheduleStatusReport(true), HEARTBEAT_MS);
       }
-      scheduleStatusReport(refreshRequested);
+      scheduleStatusReport(refreshRequested || lastStatus === null);
     }, (error) => reportExtensionError("participant-session", error, "session"));
   }
   function getCurrentStatus() {

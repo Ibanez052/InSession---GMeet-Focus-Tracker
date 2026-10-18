@@ -266,8 +266,15 @@ function isInMeeting() {
   const language = (document.documentElement.lang || navigator.language || "en").toLowerCase().split("-")[0];
   const labels = MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en;
   const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
-    const label = control.getAttribute("aria-label")?.trim() ?? "";
-    return labels.some((pattern) => pattern.test(label));
+    const labelsOnControl = ["aria-label", "title", "data-tooltip"]
+      .map((attribute) => control.getAttribute(attribute)?.trim() ?? "")
+      .filter(Boolean);
+    return labelsOnControl.some((rawLabel) => {
+      // Meet sometimes appends a keyboard shortcut to the accessible name,
+      // and the tooltip/title can carry the label when aria-label does not.
+      const label = rawLabel.replace(/\s*\([^)]*\)\s*$/, "").trim();
+      return labels.some((pattern) => pattern.test(label));
+    });
   });
   return Boolean(leaveControl);
 }
@@ -444,7 +451,10 @@ function listenForSession() {
     if (heartbeatTimer === null) {
       heartbeatTimer = setInterval(() => scheduleStatusReport(true), HEARTBEAT_MS);
     }
-    scheduleStatusReport(refreshRequested);
+    // A fresh session snapshot is the participant's first reliable signal
+    // that tracking has started. Force the initial write so a stale in-memory
+    // status cannot suppress it.
+    scheduleStatusReport(refreshRequested || lastStatus === null);
   }, (error) => reportExtensionError("participant-session", error, "session"));
 }
 
