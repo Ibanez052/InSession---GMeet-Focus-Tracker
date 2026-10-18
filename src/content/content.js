@@ -3,7 +3,6 @@ import { deleteDoc, doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "fir
 import { auth, db } from "../shared/firebase.js";
 
 const MEET_UI = Object.freeze({
-  leaveControls: 'button[aria-label], [role="button"][aria-label]',
   leaveLabels: Object.freeze({
     en: [/^leave call$/i, /^leave meeting$/i],
     de: [/^anruf verlassen$/i, /^meeting verlassen$/i],
@@ -26,6 +25,7 @@ const MEET_UI = Object.freeze({
 const AWAY_DEBOUNCE_MS = 5000;
 const HEARTBEAT_MS = 30000;
 const DURATION_STALE_AFTER_MS = 60000;
+const MEET_STATE_POLL_MS = 1000;
 let meetCode = null;
 let session = null;
 let currentRunId = null;
@@ -273,18 +273,22 @@ function isInMeeting() {
       .filter(([locale]) => locale !== language)
       .flatMap(([, patterns]) => patterns)
   ];
-  const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
+  const leaveControl = Array.from(document.querySelectorAll('[aria-label], [title], [data-tooltip]')).find((control) => {
     const labelsOnControl = ["aria-label", "title", "data-tooltip"]
       .map((attribute) => control.getAttribute(attribute)?.trim() ?? "")
       .filter(Boolean);
     return labelsOnControl.some((rawLabel) => {
-      // Meet sometimes appends a keyboard shortcut to the accessible name,
-      // and the tooltip/title can carry the label when aria-label does not.
       const label = rawLabel.replace(/\s*\([^)]*\)\s*$/, "").trim();
-      return labels.some((pattern) => pattern.test(label));
+      return /leave call/i.test(label) || labels.some((pattern) => pattern.test(label));
     });
   });
-  return Boolean(leaveControl);
+  if (leaveControl) return true;
+
+  // Meet also exposes its hang-up control as an icon ligature on some builds
+  // where the accessible label is missing or has changed.
+  return Array.from(document.querySelectorAll(
+    '.google-material-icons, .material-icons, .material-symbols-outlined'
+  )).some((icon) => icon.textContent?.trim() === "call_end" && icon.getClientRects().length > 0);
 }
 
 function hasMeetHostControls() {
@@ -751,6 +755,9 @@ const routeObserver = new MutationObserver(() => {
   scheduleRosterUpdate();
 });
 routeObserver.observe(document.documentElement, { childList: true, subtree: true });
+// Meet re-renders call controls without always causing a mutation that reaches
+// this observer. Polling catches delayed and replaced controls as a fallback.
+setInterval(scheduleMeetingContextCheck, MEET_STATE_POLL_MS);
 document.addEventListener("visibilitychange", () => scheduleStatusReport(true));
 window.addEventListener("focus", () => scheduleStatusReport(true));
 window.addEventListener("blur", () => scheduleStatusReport(true));

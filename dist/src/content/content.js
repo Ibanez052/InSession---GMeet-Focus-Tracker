@@ -29274,7 +29274,6 @@ This typically indicates that your device does not have a healthy Internet conne
 
   // src/content/content.js
   var MEET_UI = Object.freeze({
-    leaveControls: 'button[aria-label], [role="button"][aria-label]',
     leaveLabels: Object.freeze({
       en: [/^leave call$/i, /^leave meeting$/i],
       de: [/^anruf verlassen$/i, /^meeting verlassen$/i],
@@ -29297,6 +29296,7 @@ This typically indicates that your device does not have a healthy Internet conne
   var AWAY_DEBOUNCE_MS = 5e3;
   var HEARTBEAT_MS = 3e4;
   var DURATION_STALE_AFTER_MS = 6e4;
+  var MEET_STATE_POLL_MS = 1e3;
   var meetCode = null;
   var session = null;
   var currentRunId = null;
@@ -29502,14 +29502,17 @@ This typically indicates that your device does not have a healthy Internet conne
       ...MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en,
       ...Object.entries(MEET_UI.leaveLabels).filter(([locale]) => locale !== language).flatMap(([, patterns]) => patterns)
     ];
-    const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
+    const leaveControl = Array.from(document.querySelectorAll("[aria-label], [title], [data-tooltip]")).find((control) => {
       const labelsOnControl = ["aria-label", "title", "data-tooltip"].map((attribute) => control.getAttribute(attribute)?.trim() ?? "").filter(Boolean);
       return labelsOnControl.some((rawLabel) => {
         const label = rawLabel.replace(/\s*\([^)]*\)\s*$/, "").trim();
-        return labels.some((pattern) => pattern.test(label));
+        return /leave call/i.test(label) || labels.some((pattern) => pattern.test(label));
       });
     });
-    return Boolean(leaveControl);
+    if (leaveControl) return true;
+    return Array.from(document.querySelectorAll(
+      ".google-material-icons, .material-icons, .material-symbols-outlined"
+    )).some((icon) => icon.textContent?.trim() === "call_end" && icon.getClientRects().length > 0);
   }
   function hasMeetHostControls() {
     return Array.from(document.querySelectorAll(MEET_UI.hostControls)).some((control) => ["aria-label", "title", "data-tooltip"].some((attribute) => MEET_UI.hostControlLabel.test(control.getAttribute(attribute) ?? "")));
@@ -29932,6 +29935,7 @@ This typically indicates that your device does not have a healthy Internet conne
     scheduleRosterUpdate();
   });
   routeObserver.observe(document.documentElement, { childList: true, subtree: true });
+  setInterval(scheduleMeetingContextCheck, MEET_STATE_POLL_MS);
   document.addEventListener("visibilitychange", () => scheduleStatusReport(true));
   window.addEventListener("focus", () => scheduleStatusReport(true));
   window.addEventListener("blur", () => scheduleStatusReport(true));
