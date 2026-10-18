@@ -30479,6 +30479,25 @@ onAuthStateChanged(auth, (signedInUser) => {
   listenToMeeting();
   updateControls();
 });
+var participantNameForm = byId("participant-name-form");
+var participantNameInput = byId("participant-name-input");
+var participantNameStatus = byId("participant-name-status");
+chrome.storage.local.get("selfDisplayName", ({ selfDisplayName }) => {
+  if (selfDisplayName && !participantNameInput.value) participantNameInput.value = selfDisplayName;
+});
+participantNameForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name4 = participantNameInput.value.replace(/\s+/g, " ").trim();
+  if (name4.length < 2 || /^(?:you|meet participant)$/i.test(name4)) {
+    participantNameStatus.textContent = "Enter the name shown for you in the meeting.";
+    participantNameStatus.hidden = false;
+    return;
+  }
+  chrome.storage.local.set({ selfDisplayName: name4 }, () => {
+    participantNameStatus.textContent = "Saved. The host will now see this name.";
+    participantNameStatus.hidden = false;
+  });
+});
 /*! Bundled license information:
 
 @firebase/util/dist/index.esm.js:

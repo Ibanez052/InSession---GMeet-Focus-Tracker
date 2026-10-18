@@ -28,6 +28,14 @@
         <span class="participant-mark" aria-hidden="true">✓</span>
         <h1 id="participant-heading">Connecting to your meeting…</h1>
         <p id="participant-message">Your attendance status is reported automatically while the instructor's session is running.</p>
+        <form id="participant-name-form" class="participant-name-form">
+          <label for="participant-name-input">Your name in this meeting</label>
+          <div class="participant-name-row">
+            <input type="text" id="participant-name-input" maxlength="80" autocomplete="off" placeholder="Type your name, then Save" />
+            <button type="submit" class="refresh-role-btn">Save</button>
+          </div>
+          <p id="participant-name-status" role="status" hidden></p>
+        </form>
         <button type="button" id="retry-participant-error" class="refresh-role-btn" hidden>Retry connection</button>
         <button type="button" id="refresh-host-detection" class="refresh-role-btn" hidden>Refresh host detection</button>
       </section>

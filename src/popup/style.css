@@ -646,3 +646,10 @@
   .action-buttons { gap: 6px; }
   .btn { flex: 1 1 0; padding: 7px 6px; }
 }
+
+.participant-name-form { width: 100%; margin-top: 14px; text-align: left; }
+.participant-name-form label { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 700; color: #263844; }
+.participant-name-row { display: flex; gap: 8px; }
+.participant-name-row input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #9fb3c4; border-radius: 6px; font: 14px inherit; color: #17324d; }
+.participant-name-row button { margin: 0; }
+#participant-name-status { margin: 6px 0 0; font-size: 12px; color: #16776c; }

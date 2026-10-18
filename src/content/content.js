@@ -19,6 +19,7 @@ const MEET_UI = Object.freeze({
   hostControlLabel: /\b(?:host controls?|meeting controls?|host management|meeting safety)\b/i,
   googleAccount: '[aria-label*="Google Account:" i]',
   selfName: "[data-self-name]",
+  guestNameInput: 'input[aria-label="Your name" i], input[placeholder="Your name" i], input[autocomplete="name"]',
   participantRows: '[role="listitem"]',
   youLabel: /(?:\(\s*You\s*\)|(?:^|[\s,])You(?:$|[\s,]))/i
 });
@@ -51,6 +52,7 @@ let durationStatus = null;
 let durationLastReportedAt = null;
 let statusWriteQueue = Promise.resolve();
 let lastStatus = null;
+let lastReportedName = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
 let privacyNoticeHost = null;
@@ -61,6 +63,32 @@ let activityCheckInRequest = null;
 let privacyNoticeDismissalLoaded = false;
 let privacyNoticeDismissedRun = null;
 let checkInAck = null;
+
+// After the extension is reloaded or updated, the old content script keeps
+// running in already-open tabs but every chrome.* call throws "Extension
+// context invalidated". Detect that and shut the stale script down quietly;
+// a page refresh loads the new script.
+function extensionAlive() {
+  try { return Boolean(chrome.runtime?.id); } catch { return false; }
+}
+
+let staleShutdownDone = false;
+function shutDownIfStale() {
+  if (extensionAlive()) return false;
+  if (staleShutdownDone) return true;
+  staleShutdownDone = true;
+  meetingActive = false;
+  for (const timer of [heartbeatTimer, checkInTimer]) if (timer !== null) clearInterval(timer);
+  for (const timer of [awayTimer, meetingContextTimer, leaveConfirmationTimer, rosterUpdateTimer]) if (timer !== null) clearTimeout(timer);
+  heartbeatTimer = checkInTimer = awayTimer = meetingContextTimer = leaveConfirmationTimer = rosterUpdateTimer = null;
+  clearInterval(statePollTimer);
+  routeObserver.disconnect();
+  try { stopSessionListener?.(); } catch { /* already closed */ }
+  removeActivityCheckInPrompt();
+  removeTrackingNotice();
+  removeNamePrompt();
+  return true;
+}
 
 function getParticipantRoster() {
   const names = new Map();
@@ -313,17 +341,133 @@ function isCleanName(value) {
   return Boolean(name && name.length >= 2 && name.length <= 80);
 }
 
+// Names Meet uses for the local user's own tile. These are labels, not names.
+const SELF_LABEL = /^(?:you|your|me|meet participant|presenting)$/i;
+let cachedSelfName = null;
+
+function cleanSelfName(value) {
+  const name = String(value ?? "")
+    .replace(/\(\s*You\s*\)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return isCleanName(name) && !SELF_LABEL.test(name) ? name : null;
+}
+
+// Reads the local user's own display name from whatever Meet currently renders.
+// The People panel is usually closed on a participant's machine, so the row
+// based lookup alone almost never works; the pre-join screen and the Google
+// account button are the reliable sources.
+function detectSelfName() {
+  const selfAttr = cleanSelfName(document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name"));
+  if (selfAttr) return selfAttr;
+
+  const you = Array.from(document.querySelectorAll(MEET_UI.participantRows)).find(isSelfParticipantRow);
+  const rowName = cleanSelfName(you ? getParticipantRowName(you) : null);
+  if (rowName) return rowName;
+
+  for (const element of document.querySelectorAll(MEET_UI.googleAccount)) {
+    const match = (element.getAttribute("aria-label") ?? "").match(/Google Account:\s*([^,(\r\n]+)/i);
+    const accountName = cleanSelfName(match?.[1]);
+    if (accountName) return accountName;
+  }
+
+  // Guests (not signed in) type their name on the pre-join screen.
+  for (const input of document.querySelectorAll(MEET_UI.guestNameInput)) {
+    const typed = cleanSelfName(input.value);
+    if (typed) return typed;
+  }
+  return null;
+}
+
+function rememberSelfName() {
+  const name = detectSelfName();
+  if (name && name !== cachedSelfName) {
+    cachedSelfName = name;
+    return true;
+  }
+  return false;
+}
+
+let namePromptHost = null;
+let namePromptMode = null;
+let nameConfirmedForPage = false;
+// The name the participant typed themselves. It always wins over anything
+// read from Meet's markup, which changes often.
+let manualSelfName = null;
+
+function removeNamePrompt() {
+  namePromptHost?.remove();
+  namePromptHost = null;
+  namePromptMode = null;
+}
+
+function desiredNamePromptMode() {
+  if (!meetCode) return null;
+  // Before joining: ask once per page load, prefilled, so the name is
+  // recorded before the participant ever appears in the meeting.
+  if (!meetingActive) return nameConfirmedForPage ? null : "prejoin";
+  // Already in the call with no usable name: ask now.
+  if (currentUid && session?.status === "running" && !isHostClient() && !findMyName()) return "incall";
+  return null;
+}
+
+function saveManualName(value) {
+  const name = cleanSelfName(value);
+  if (!name) return false;
+  manualSelfName = name;
+  nameConfirmedForPage = true;
+  try { chrome.storage.local.set({ selfDisplayName: name }); } catch { /* storage unavailable */ }
+  removeNamePrompt();
+  if (meetingActive) scheduleStatusReport(true);
+  return true;
+}
+
+function updateNamePrompt() {
+  const mode = desiredNamePromptMode();
+  if (!mode) {
+    removeNamePrompt();
+    return;
+  }
+  if (namePromptHost?.isConnected && namePromptMode === mode) return;
+  removeNamePrompt();
+  namePromptMode = mode;
+  const prejoin = mode === "prejoin";
+  namePromptHost = document.createElement("div");
+  namePromptHost.id = "insession-name-prompt";
+  const shadow = namePromptHost.attachShadow({ mode: "closed" });
+  shadow.innerHTML = `
+    <style>
+      :host { all: initial; position: fixed; z-index: 2147483647; top: 64px; left: 50%; transform: translateX(-50%); width: min(400px, calc(100vw - 24px)); font: 13px/1.45 Arial, sans-serif; color: #17324d; }
+      .card { box-sizing: border-box; padding: 12px 14px; border: 1px solid #cbd9e5; border-top: 4px solid #16776c; border-radius: 10px; background: #fff; box-shadow: 0 3px 14px #102a4330; }
+      strong { display: block; margin-bottom: 2px; }
+      form { display: flex; gap: 8px; margin-top: 8px; }
+      input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #9fb3c4; border-radius: 6px; font: 14px Arial, sans-serif; color: #17324d; background: #fff; }
+      button { padding: 0 14px; border: 0; border-radius: 6px; background: #16776c; color: #fff; font: 700 13px Arial, sans-serif; cursor: pointer; }
+    </style>
+    <section class="card" role="dialog" aria-label="InSession name">
+      <strong></strong>
+      <span class="hint"></span>
+      <form><input type="text" maxlength="80" placeholder="Your name" aria-label="Your name" /><button type="submit">Save</button></form>
+    </section>`;
+  shadow.querySelector("strong").textContent = prejoin
+    ? "Enter your name for InSession"
+    : "InSession could not read your Meet name";
+  shadow.querySelector(".hint").textContent = prejoin
+    ? "Type the name you join Meet with. The host will see it in the attendance list."
+    : "Type your name exactly as it appears in the meeting so the host can see it.";
+  const input = shadow.querySelector("input");
+  if (prejoin) input.value = manualSelfName || detectSelfName() || cachedSelfName || "";
+  // Keep Meet's keyboard shortcuts (m, v, c...) from firing while typing.
+  for (const type of ["keydown", "keyup", "keypress"]) input.addEventListener(type, (event) => event.stopPropagation());
+  shadow.querySelector("form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!saveManualName(input.value)) input.focus();
+  });
+  (document.body || document.documentElement).appendChild(namePromptHost);
+}
+
 function findMyName() {
-  const self = document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name");
-  if (isCleanName(self)) return self.trim();
-  const you = Array.from(document.querySelectorAll(MEET_UI.participantRows))
-    .find(isSelfParticipantRow);
-  const text = you ? getParticipantRowName(you) : null;
-  if (isCleanName(text)) return text;
-  const account = document.querySelector(MEET_UI.googleAccount)?.getAttribute("aria-label") ?? "";
-  const accountMatch = account.match(/Google Account:\s*([^,(]+)/i);
-  if (isCleanName(accountMatch?.[1])) return accountMatch[1].trim();
-  return auth.currentUser?.displayName || null;
+  return manualSelfName || detectSelfName() || cachedSelfName || cleanSelfName(auth.currentUser?.displayName) || null;
 }
 
 function removeTrackingNotice() {
@@ -438,6 +582,7 @@ function listenForSession() {
       durationStatus = null;
       durationLastReportedAt = null;
       lastStatus = null;
+      lastReportedName = null;
       lastHeartbeatAt = 0;
     }
     renderTrackingNotice();
@@ -549,13 +694,14 @@ async function writeStatus(forceHeartbeat = false, statusOverride = null, additi
     || isHostClient()) return false;
   const name = findMyName();
   if (name) currentName = name;
+  const nameChanged = Boolean(currentName) && currentName !== lastReportedName;
   const status = statusOverride ?? getCurrentStatus();
   const reportRunId = currentRunId;
   await ensureDurationState(Date.now());
   if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId
     || isHostClient()) return false;
   const now = Date.now();
-  if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return false;
+  if (!forceHeartbeat && !nameChanged && status === lastStatus && now - lastHeartbeatAt < 30000) return false;
   let nextActiveDurationMs = activeDurationMs;
   let nextAwayDurationMs = awayDurationMs;
   if (durationStatus && durationLastReportedAt !== null) {
@@ -579,6 +725,7 @@ async function writeStatus(forceHeartbeat = false, statusOverride = null, additi
   durationLastReportedAt = durationStatus ? now : null;
   lastStatus = status;
   lastHeartbeatAt = now;
+  if (currentName) lastReportedName = currentName;
   return true;
 }
 
@@ -612,7 +759,10 @@ function syncMeetingContext() {
     // write is interrupted by a closed browser or lost connection.
     void reportStatus(true, "left");
   }
-  if (nextCode !== meetCode) currentName = null;
+  if (nextCode !== meetCode) {
+    currentName = null;
+    nameConfirmedForPage = false;
+  }
   meetCode = nextCode;
   meetingActive = nextMeetingActive;
   listenForSession();
@@ -622,6 +772,10 @@ function scheduleMeetingContextCheck() {
   if (meetingContextTimer !== null) return;
   meetingContextTimer = setTimeout(() => {
     meetingContextTimer = null;
+    // Capture the name while it is visible (pre-join screen) and push a
+    // correction if a record was already written as "Meet participant".
+    if (rememberSelfName() && meetingActive && session?.status === "running") scheduleStatusReport(true);
+    updateNamePrompt();
     syncMeetingContext();
   }, 500);
 }
@@ -639,7 +793,8 @@ onAuthStateChanged(auth, async (user) => {
   listenForSession();
 });
 
-chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun"], ({ hostUid, privacyNoticeDismissedRun: dismissedRun }) => {
+chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun", "selfDisplayName"], ({ hostUid, privacyNoticeDismissedRun: dismissedRun, selfDisplayName }) => {
+  if (!manualSelfName && cleanSelfName(selfDisplayName)) manualSelfName = cleanSelfName(selfDisplayName);
   storedHostUid = hostUid ?? null;
   storedHostUidLoaded = true;
   privacyNoticeDismissedRun = dismissedRun ?? null;
@@ -650,6 +805,15 @@ chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun"], ({ hostUid, p
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
+  if (changes.selfDisplayName) {
+    const name = cleanSelfName(changes.selfDisplayName.newValue);
+    if (name && name !== manualSelfName) {
+      manualSelfName = name;
+      nameConfirmedForPage = true;
+      updateNamePrompt();
+      if (meetingActive) scheduleStatusReport(true);
+    }
+  }
   if (changes.hostUid) {
     storedHostUid = changes.hostUid.newValue ?? null;
     storedHostUidLoaded = true;
@@ -755,21 +919,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 meetCode = readMeetCode();
 meetingActive = Boolean(meetCode && isInMeeting());
 const routeObserver = new MutationObserver(() => {
+  if (shutDownIfStale()) return;
   scheduleMeetingContextCheck();
   scheduleRosterUpdate();
 });
 routeObserver.observe(document.documentElement, { childList: true, subtree: true });
 // Meet re-renders call controls without always causing a mutation that reaches
 // this observer. Polling catches delayed and replaced controls as a fallback.
-setInterval(scheduleMeetingContextCheck, MEET_STATE_POLL_MS);
-document.addEventListener("visibilitychange", () => scheduleStatusReport(true));
-window.addEventListener("focus", () => scheduleStatusReport(true));
-window.addEventListener("blur", () => scheduleStatusReport(true));
+const statePollTimer = setInterval(() => {
+  if (!shutDownIfStale()) scheduleMeetingContextCheck();
+}, MEET_STATE_POLL_MS);
+document.addEventListener("visibilitychange", () => { if (!shutDownIfStale()) scheduleStatusReport(true); });
+window.addEventListener("focus", () => { if (!shutDownIfStale()) scheduleStatusReport(true); });
+window.addEventListener("blur", () => { if (!shutDownIfStale()) scheduleStatusReport(true); });
 window.addEventListener("pagehide", () => {
+  if (shutDownIfStale()) return;
   if (awayTimer !== null) clearTimeout(awayTimer);
   awayTimer = null;
-  chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending: false }, () => { void chrome.runtime.lastError; });
+  try {
+    chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending: false }, () => { void chrome.runtime.lastError; });
+  } catch { /* extension reloaded */ }
   void reportStatus(true, "left");
 });
-window.addEventListener("pageshow", () => scheduleStatusReport(true));
+window.addEventListener("pageshow", () => { if (!shutDownIfStale()) scheduleStatusReport(true); });
 console.info("[InSession] Authenticated tracker ready.");

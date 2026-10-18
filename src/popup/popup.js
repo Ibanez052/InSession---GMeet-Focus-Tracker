@@ -1044,3 +1044,25 @@ onAuthStateChanged(auth, (signedInUser) => {
   listenToMeeting();
   updateControls();
 });
+
+// Participants confirm the name the host should see. The Meet tab's content
+// script picks the saved value up from chrome.storage and re-reports.
+const participantNameForm = byId("participant-name-form");
+const participantNameInput = byId("participant-name-input");
+const participantNameStatus = byId("participant-name-status");
+chrome.storage.local.get("selfDisplayName", ({ selfDisplayName }) => {
+  if (selfDisplayName && !participantNameInput.value) participantNameInput.value = selfDisplayName;
+});
+participantNameForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = participantNameInput.value.replace(/\s+/g, " ").trim();
+  if (name.length < 2 || /^(?:you|meet participant)$/i.test(name)) {
+    participantNameStatus.textContent = "Enter the name shown for you in the meeting.";
+    participantNameStatus.hidden = false;
+    return;
+  }
+  chrome.storage.local.set({ selfDisplayName: name }, () => {
+    participantNameStatus.textContent = "Saved. The host will now see this name.";
+    participantNameStatus.hidden = false;
+  });
+});
