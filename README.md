@@ -28,11 +28,13 @@ For development, keep the extension loaded from the repository root. Clicking it
 Before signing in or tracking participants:
 
 1. In Firebase Authentication, enable **Google** and **Anonymous** sign-in providers.
-2. The Google Cloud OAuth client must be type **Chrome Extension** with Item ID `beihnncofapjnpgfkphgocbdkigiedod`. Its client ID is already configured in `manifest.json`; the client secret is not used by this extension.
-3. In Firebase Authentication's Authorized domains settings, add `chrome-extension://beihnncofapjnpgfkphgocbdkigiedod`. Keep the old extension domain while existing installs still use it.
-4. Deploy the included Firestore rules with the Firebase CLI: `firebase deploy --only firestore:rules --project insession-d7332`.
+2. In Firebase Authentication's Authorized domains settings, allow the pinned extension ID `chrome-extension://beihnncofapjnpgfkphgocbdkigiedod` and the project's Hosting domain `insession-d7332.web.app`.
+3. Deploy Firestore rules and the hosted Google sign-in helper with the Firebase CLI:
+   ```sh
+   firebase deploy --only firestore:rules,hosting --project insession-d7332
+   ```
 
-The extension requests only the basic Google identity scopes `openid`, `email`, and `profile`. Google allows users of apps requesting only these scopes to sign in without being added as test users, though Testing mode can still show a testing warning. Switching the OAuth consent screen to **In production** is separate from publishing the extension in the Chrome Web Store.
+Google sign-in runs through the hosted Firebase helper, which asks Google to show an account chooser. No Chrome Extension OAuth client secret is stored in the extension. Switching the OAuth consent screen to **In production** is separate from publishing the extension in the Chrome Web Store.
 
 The Firebase web API key in the source is public configuration. Firestore access is protected by `firestore.rules`; deploy those rules before using the extension and after rule changes. The side panel uses the host-controls button in the Meet page as a role-detection signal. Google documents that only meeting hosts can access those controls, but this is a UI check and may break if Meet changes its page markup. Firestore rules can verify Google sign-in and session ownership; they cannot verify this page signal, so this is not tamper-proof host authorization. The host's roster names are read from the Meet page and displayed locally; they are not uploaded to Firestore. Activity status and check-in responses come from each participant's extension. Missing reports display as **Not reporting** and do not prove whether someone is present or paying attention. Attendance data is stored in Cloud Firestore (not Firebase Storage) only while a session is active or awaiting a successful export. Ending a session downloads a CSV and then removes the session and attendee documents from Firestore.
 

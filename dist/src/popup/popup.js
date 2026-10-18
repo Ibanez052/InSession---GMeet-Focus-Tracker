@@ -29629,26 +29629,24 @@ var participantPreviewMode = false;
 var participantPreviewConfirmed = false;
 var STALE_AFTER_MS = 6e4;
 var DELETE_BATCH_SIZE = 450;
-function getGoogleAccessToken() {
+async function signOutAndClearGoogleAccount() {
+  await signOut(auth);
+}
+function requestGoogleAccountSelection() {
   return new Promise((resolve, reject) => {
-    chrome.identity.getAuthToken({ interactive: true }, (result) => {
+    chrome.runtime.sendMessage({ type: "in-session:choose-google-account" }, (result) => {
       const error = chrome.runtime.lastError;
       if (error) {
         reject(new Error(error.message));
         return;
       }
-      const token = typeof result === "string" ? result : result?.token;
-      if (!token) {
-        reject(new Error("Chrome did not return a Google access token. Check the extension OAuth client and extension ID."));
+      if (!result?.accessToken) {
+        reject(new Error(result?.message || "Google account selection was canceled or did not return an access token."));
         return;
       }
-      resolve(token);
+      resolve(result.accessToken);
     });
   });
-}
-async function signOutAndClearGoogleAccount() {
-  await signOut(auth);
-  await chrome.identity.clearAllCachedAuthTokens();
 }
 function getMeetCode(url) {
   try {
@@ -30242,7 +30240,7 @@ signInButton.addEventListener("click", async () => {
   setNotice("Opening Google sign-in\u2026");
   try {
     await ensureParticipantAuth();
-    const token = await getGoogleAccessToken();
+    const token = await requestGoogleAccountSelection();
     const credential = GoogleAuthProvider.credential(null, token);
     if (auth.currentUser?.isAnonymous) {
       try {
