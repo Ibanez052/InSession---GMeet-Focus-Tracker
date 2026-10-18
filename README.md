@@ -1,6 +1,6 @@
 # InSession – GMeet Focus Tracker
 
-A Chrome (Manifest V3) extension for Google Meet that shows whether participants are in the Meet tab or somewhere else. Each participant's extension reports its own status to Firestore. The host side panel combines those reports with names currently visible in Meet's participant roster and can request periodic participant check-ins.
+A Chrome (Manifest V3) extension for Google Meet that shows whether participants are in the Meet tab or somewhere else. Each participant's extension reports its own status to Firestore. The host side panel combines those reports with names currently visible in Meet's participant roster and can request periodic or instant participant check-ins.
 
 > **Status: prototype.** This README tracks known issues and planned improvements. Checked items are implemented or no longer apply to the participant self-reporting design.
 
@@ -147,9 +147,9 @@ All fixes below fit one redesign:
 
 - [x] **21. Firebase API key is public in the repo.** This is expected for client-side Firebase configuration. Firestore rules protect data access; the key is not an authorization secret.
 
-- [x] **22. Participant privacy notice and retention.** The notice explains shared status and check-in response times. The host downloads attendance when ending the session; Firestore records are deleted only after Chrome confirms the CSV download. If the download fails or is canceled, the ended session remains available for retry.
+- [x] **22. Participant privacy notice and retention.** The notice explains shared status and check-in response times, and participants can dismiss it for the current session. The host downloads attendance when ending the session; Firestore records are deleted only after Chrome confirms the CSV download. If the download fails or is canceled, the ended session remains available for retry.
 
-- [x] **23. Clients can be spoofed or disabled.** Firestore rules require participant writes to use that participant's authenticated UID. Missing or stale heartbeats display as **Not reporting**, rather than Active or Away. Instructor-selected check-ins show whether a participant clicked to confirm; they cannot prove attention or prevent disabling/modifying the extension.
+- [x] **23. Clients can be spoofed or disabled.** Firestore rules require participant writes to use that participant's authenticated UID. Missing or stale heartbeats display as **Not reporting**, rather than Active or Away. Instructor-selected periodic and instant check-ins show whether a participant clicked to confirm; they cannot prove attention or prevent disabling/modifying the extension.
 
 - [x] **25. Switch the instructor account during a meeting.** **Switch account** opens a two-minute handoff for the current session. The next Google account can take ownership after the extension detects Meet host controls. Deploy the updated `firestore.rules` for this to work. Meet's host-control signal is client-side and cannot be verified by Firestore, so only use the handoff when you intend to transfer control.
 
@@ -186,4 +186,4 @@ All fixes below fit one redesign:
 
 ## Progress
 
-Firestore rules are deployed to `insession-d7332`, and Google sign-in is working. Some original review items have been rewritten because the implementation no longer uses the scraper-based design.
+Google sign-in and Firebase Hosting are working. Deploy the included Firestore rules after rule changes. Some original review items have been rewritten because the implementation no longer uses the scraper-based design.

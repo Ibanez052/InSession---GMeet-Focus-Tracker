@@ -50,6 +50,8 @@ let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
 let privacyNoticeHost = null;
+let privacyNoticeDismissalLoaded = false;
+let privacyNoticeDismissedRun = null;
 let checkInAck = null;
 
 function getParticipantRoster() {
@@ -67,7 +69,7 @@ function getParticipantRoster() {
 
 function getParticipantRowName(row) {
   const textRow = row.cloneNode(true);
-  textRow.querySelectorAll('button, [role="button"], [aria-label], [data-tooltip], svg, [aria-hidden="true"]')
+  textRow.querySelectorAll('button, [role="button"], svg, [aria-hidden="true"]')
     .forEach((control) => control.remove());
   const text = (textRow.innerText || textRow.textContent || "")
     .replace(/You can't unmute someone else/gi, " ")
@@ -113,12 +115,17 @@ function updateCheckInBadge() {
   const round = currentCheckInRound();
   const cycleId = session?.checkInCycleId || "";
   const isParticipant = Boolean(meetingActive && currentUid && session?.hostUid !== currentUid && session?.hostUid !== storedHostUid);
-  const pending = Boolean(isParticipant && round && cycleId && !(
+  const periodicPending = Boolean(isParticipant && round && cycleId && !(
     checkInAck?.meetCode === meetCode
     && checkInAck?.runId === currentRunId
     && checkInAck?.cycleId === cycleId
     && checkInAck?.round === round
   ));
+  const instantPending = Boolean(isParticipant && session?.status === "running" && session?.checkInPromptId
+    && !(checkInAck?.meetCode === meetCode
+      && checkInAck?.runId === currentRunId
+      && checkInAck?.promptId === session.checkInPromptId));
+  const pending = periodicPending || instantPending;
   try {
     chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending }, () => { void chrome.runtime.lastError; });
   } catch (error) { console.warn("[InSession] Could not update the activity check-in badge:", error); }
@@ -188,9 +195,21 @@ function removeTrackingNotice() {
   privacyNoticeHost = null;
 }
 
+function dismissTrackingNotice() {
+  privacyNoticeDismissedRun = `${meetCode}:${session?.runId || ""}`;
+  chrome.storage.local.set({ privacyNoticeDismissedRun });
+  removeTrackingNotice();
+}
+
 function renderTrackingNotice() {
   const isHost = Boolean(session?.hostUid && (session.hostUid === currentUid || session.hostUid === storedHostUid));
   if (!meetingActive || session?.status !== "running" || !currentUid || isHost) {
+    removeTrackingNotice();
+    return;
+  }
+  const runKey = `${meetCode}:${session?.runId || ""}`;
+  if (!privacyNoticeDismissalLoaded) return;
+  if (privacyNoticeDismissedRun === runKey) {
     removeTrackingNotice();
     return;
   }
@@ -206,19 +225,21 @@ function renderTrackingNotice() {
         .notice { box-sizing: border-box; padding: 10px 14px; border: 1px solid #cbd9e5; border-radius: 10px; background: #fff; box-shadow: 0 3px 14px #102a4330; }
         .heading { display: flex; align-items: center; gap: 8px; font-weight: 700; }
         .dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #d28a20; }
+        .dismiss { margin-left: auto; padding: 0 3px; border: 0; background: transparent; color: #496170; cursor: pointer; font: 20px/1 Arial, sans-serif; }
         details { margin-top: 5px; }
         summary { width: fit-content; color: #315c7d; cursor: pointer; font-size: 12px; }
         p { margin: 6px 0 0; }
         @media (prefers-reduced-motion: no-preference) { .notice { animation: enter 180ms ease-out; } @keyframes enter { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } } }
       </style>
       <section class="notice" role="status" aria-live="polite">
-        <div class="heading"><span class="dot" aria-hidden="true"></span><span>InSession attendance tracking is on</span></div>
+        <div class="heading"><span class="dot" aria-hidden="true"></span><span>InSession attendance tracking is on</span><button class="dismiss" type="button" aria-label="Dismiss InSession notice" title="Dismiss">×</button></div>
         <details>
           <summary>What is shared?</summary>
-          <p>The session host can see your Meet display name, whether this Meet tab is Active or Away, and when your status was last updated. The host may also request a periodic one-click activity confirmation; the response time is shared with the host. InSession checks this Meet tab only; it does not read your audio or video.</p>
+          <p>The session host can see your Meet display name, whether this Meet tab is Active or Away, and when your status was last updated. The host may also request a periodic or instant one-click activity confirmation; the response time is shared with the host. InSession checks this Meet tab only; it does not read your audio or video.</p>
           <p>Tracking runs only while the host's session is running. When the host ends the session, attendance is downloaded as a CSV and the session records are deleted from Firebase after the download completes. If the download or cleanup fails, the host can retry.</p>
         </details>
       </section>`;
+    shadow.querySelector(".dismiss").addEventListener("click", dismissTrackingNotice);
     (document.body || document.documentElement).appendChild(privacyNoticeHost);
   }
 }
@@ -457,8 +478,10 @@ onAuthStateChanged(auth, async (user) => {
   listenForSession();
 });
 
-chrome.storage.local.get("hostUid", ({ hostUid }) => {
+chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun"], ({ hostUid, privacyNoticeDismissedRun: dismissedRun }) => {
   storedHostUid = hostUid ?? null;
+  privacyNoticeDismissedRun = dismissedRun ?? null;
+  privacyNoticeDismissalLoaded = true;
   renderTrackingNotice();
   updateCheckInBadge();
   if (session?.status === "running" && session.hostUid === storedHostUid) lastStatus = null;
@@ -490,16 +513,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.action === "check-in") {
     const round = currentCheckInRound();
     const cycleId = session?.checkInCycleId || "";
-    if (!round || round !== message.round || !cycleId || cycleId !== message.cycleId) {
+    const promptId = message.promptId;
+    const instantPromptMatches = Boolean(promptId && session?.status === "running" && session?.checkInPromptId === promptId);
+    const periodicCheckInMatches = Boolean(!promptId && round && round === message.round && cycleId && cycleId === message.cycleId);
+    if (!instantPromptMatches && !periodicCheckInMatches) {
       sendResponse({ ok: false, message: "That activity check has expired. Refresh the side panel." });
       return;
     }
-    void reportStatus(true, lastStatus ?? getCurrentStatus(), { checkInRound: round, checkInCycleId: cycleId, checkInAt: serverTimestamp() })
+    const responseFields = instantPromptMatches
+      ? {
+          checkInPromptId: promptId,
+          ...(round && cycleId ? { checkInCycleId: cycleId, checkInRound: round } : {}),
+          checkInAt: serverTimestamp(),
+        }
+      : { checkInRound: round, checkInCycleId: cycleId, checkInAt: serverTimestamp() };
+    void reportStatus(true, lastStatus ?? getCurrentStatus(), responseFields)
       .then(async (ok) => {
         if (!ok) throw new Error("Your activity confirmation could not be saved.");
-        checkInAck = { meetCode, runId: currentRunId, cycleId, round };
         const stored = await chrome.storage.local.get("activityCheckInAcks");
         const checkInAcks = stored.activityCheckInAcks ?? {};
+        const priorAck = checkInAcks[meetCode];
+        checkInAck = {
+          ...(priorAck?.runId === currentRunId ? priorAck : {}),
+          meetCode,
+          runId: currentRunId,
+          ...(instantPromptMatches ? { promptId, ...(round && cycleId ? { cycleId, round } : {}) } : { cycleId, round }),
+        };
         checkInAcks[meetCode] = checkInAck;
         await chrome.storage.local.set({ activityCheckInAcks: checkInAcks });
         updateCheckInBadge();

@@ -131,24 +131,28 @@
       text-align: left;
     }
     .activity-check-in .btn { width: 100%; margin-top: 12px; }
-    .check-in-preview-note {
-      max-width: 340px;
-      padding: 8px 10px;
-      border: 1px solid #e6c46c;
-      border-radius: 8px;
-      background: #fff9e7;
-      color: #735c1d !important;
-      font-size: 12px !important;
+    .check-in-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 8px;
     }
-    .preview-check-in-btn { align-self: flex-start; }
+    .request-check-in-btn {
+      min-height: 34px;
+      padding: 7px 9px;
+      white-space: nowrap;
+      font-size: 12px;
+    }
     .check-in-settings {
       display: flex;
-      align-items: center;
-      gap: 8px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
       color: #315c7d;
       font-size: 12px;
     }
     .check-in-settings select {
+      width: 100%;
       min-width: 0;
       padding: 7px 9px;
       border: 1px solid #d7e0e8;

@@ -41,7 +41,7 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/sessions/$(code)).data.hostUid != uid
           && request.resource.data.keys().hasOnly([
             'uid', 'name', 'status', 'runId', 'activeDurationMs', 'awayDurationMs', 'lastSeen',
-            'checkInCycleId', 'checkInRound', 'checkInAt'
+            'checkInCycleId', 'checkInRound', 'checkInPromptId', 'checkInAt'
           ])
           && request.resource.data.uid == uid
           && (!('runId' in request.resource.data)
@@ -54,6 +54,8 @@ service cloud.firestore {
             || request.resource.data.checkInCycleId is string)
           && (!('checkInRound' in request.resource.data)
             || (request.resource.data.checkInRound is number && request.resource.data.checkInRound >= 1))
+          && (!('checkInPromptId' in request.resource.data)
+            || request.resource.data.checkInPromptId is string)
           && (!('checkInAt' in request.resource.data)
             || request.resource.data.checkInAt is timestamp)
           && request.resource.data.status in ['active', 'away', 'left'];

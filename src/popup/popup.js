@@ -20,9 +20,6 @@ const participantMessage = byId("participant-message");
 const retryParticipantErrorButton = byId("retry-participant-error");
 const retrySessionErrorButton = byId("retry-session-error");
 const refreshHostDetectionButton = byId("refresh-host-detection");
-const previewCheckInButton = byId("preview-check-in");
-const checkInPreviewNote = byId("check-in-preview-note");
-const exitCheckInPreviewButton = byId("exit-check-in-preview");
 const btnStart = byId("start-session");
 const btnPause = byId("pause-session");
 const btnEnd = byId("end-session");
@@ -30,6 +27,7 @@ const btnDownloadAttendance = byId("download-attendance");
 const statusFilter = byId("status-filter");
 const checkInSettings = byId("check-in-settings");
 const checkInIntervalSelect = byId("check-in-interval");
+const requestCheckInButton = byId("request-check-in");
 const activityCheckIn = byId("activity-check-in");
 const confirmActivityButton = byId("confirm-activity");
 
@@ -61,8 +59,6 @@ let stalenessTimer = null;
 let checkInRefreshTimer = null;
 let selectedCheckInInterval = 0;
 let endConfirmationPending = false;
-let participantPreviewMode = false;
-let participantPreviewConfirmed = false;
 const STALE_AFTER_MS = 60_000;
 const DELETE_BATCH_SIZE = 450;
 
@@ -249,19 +245,19 @@ function updateParticipantCheckIn() {
   const round = currentCheckInRound();
   const cycleId = sessionData?.checkInCycleId || "";
   chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
-    if (participantPreviewMode) {
-      activityCheckIn.hidden = false;
-      confirmActivityButton.disabled = participantPreviewConfirmed;
-      confirmActivityButton.textContent = participantPreviewConfirmed ? "Confirmed (preview)" : "I'm here";
-      return;
-    }
     const activityCheckInAck = activityCheckInAcks?.[meetCode];
-    const pending = Boolean(round && cycleId && user && sessionData?.hostUid !== user.uid && !(
+    const periodicPending = Boolean(round && cycleId && user && sessionData?.hostUid !== user.uid && !(
       activityCheckInAck?.meetCode === meetCode
       && activityCheckInAck?.runId === sessionData.runId
       && activityCheckInAck?.cycleId === cycleId
       && activityCheckInAck?.round === round
     ));
+    const instantPending = Boolean(sessionData?.status === "running" && sessionData?.checkInPromptId
+      && user && sessionData.hostUid !== user.uid
+      && !(activityCheckInAck?.meetCode === meetCode
+        && activityCheckInAck?.runId === sessionData.runId
+        && activityCheckInAck?.promptId === sessionData.checkInPromptId));
+    const pending = periodicPending || instantPending;
     activityCheckIn.hidden = !pending;
     confirmActivityButton.disabled = Boolean(pendingAction);
     confirmActivityButton.textContent = pending ? "I'm here" : "Confirmed";
@@ -321,7 +317,9 @@ function createAttendanceCsv(session, participantDocs, endedAtMs) {
       : signalAgeMs <= STALE_AFTER_MS && ["active", "away"].includes(student.status)
         ? student.status === "active" ? "Active" : "Away"
         : "Not reporting";
-    const checkInAtMs = student.runId === session.runId && student.checkInCycleId === session.checkInCycleId
+    const checkInAtMs = student.runId === session.runId
+      && ((session.checkInPromptId && student.checkInPromptId === session.checkInPromptId)
+        || (session.checkInCycleId && student.checkInCycleId === session.checkInCycleId))
       ? toMillis(student.checkInAt)
       : Number.NaN;
     return ["Participant", session.meetCode, startedAt, endedAt, student.name || "Meet participant", finalStatus,
@@ -467,18 +465,13 @@ function updateControls() {
   const ownsCurrentSession = Boolean(sessionData?.hostUid && sessionData.hostUid === user?.uid);
   const isHost = Boolean(isGoogleUser && meetCode
     && (ownsCurrentSession || (!sessionData && hostControlsVisible)));
-  if (!isHost && participantPreviewMode) {
-    participantPreviewMode = false;
-    participantPreviewConfirmed = false;
-  }
-  const isPreviewingCheckIn = isHost && participantPreviewMode;
   hostControls.hidden = !isHost;
-  hostDashboard.hidden = !isHost || isPreviewingCheckIn;
-  participantView.hidden = isHost && !isPreviewingCheckIn;
+  hostDashboard.hidden = !isHost;
+  participantView.hidden = isHost;
   checkInSettings.hidden = !isHost;
-  previewCheckInButton.hidden = !isHost || isPreviewingCheckIn;
-  checkInPreviewNote.hidden = !isPreviewingCheckIn;
-  exitCheckInPreviewButton.hidden = !isPreviewingCheckIn;
+  requestCheckInButton.hidden = !isHost || sessionData?.status !== "running";
+  requestCheckInButton.disabled = Boolean(pendingAction);
+  requestCheckInButton.textContent = pendingAction === requestCheckInButton ? pendingActionLabel : "Check in now";
   if (isHost) {
     checkInIntervalSelect.value = String(sessionData?.checkInIntervalMinutes ?? selectedCheckInInterval);
     selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;
@@ -489,14 +482,7 @@ function updateControls() {
   signInButton.hidden = !hostControlsVisible || isGoogleUser
     || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid && !sessionData?.hostTransferPending);
   signInButton.textContent = user?.isAnonymous ? "Sign in as instructor" : "Instructor sign-in";
-  signOutButton.hidden = !isGoogleUser || isPreviewingCheckIn;
-
-  if (isPreviewingCheckIn) {
-    accountStatus.textContent = "Participant preview";
-    setParticipantNotice("Attendance is being tracked", `Your status is shared with the host for meeting ${meetCode}.`);
-    updateParticipantCheckIn();
-    return;
-  }
+  signOutButton.hidden = !isGoogleUser;
 
   if (isHost) {
     accountStatus.textContent = `Signed in as ${user.displayName || user.email || "Google account"}`;
@@ -557,7 +543,7 @@ async function runSessionAction(button, pendingLabel, action, errorLabel) {
   clearPopupError();
   pendingAction = button;
   pendingActionLabel = pendingLabel;
-  [btnStart, btnPause, btnEnd, btnDownloadAttendance].forEach((control) => {
+  [btnStart, btnPause, btnEnd, btnDownloadAttendance, requestCheckInButton].forEach((control) => {
     control.disabled = true;
     control.setAttribute("aria-busy", "true");
   });
@@ -572,7 +558,7 @@ async function runSessionAction(button, pendingLabel, action, errorLabel) {
   } finally {
     pendingAction = null;
     pendingActionLabel = "";
-    [btnStart, btnPause, btnEnd, btnDownloadAttendance].forEach((control) => control.removeAttribute("aria-busy"));
+    [btnStart, btnPause, btnEnd, btnDownloadAttendance, requestCheckInButton].forEach((control) => control.removeAttribute("aria-busy"));
     updateControls();
   }
   if (failureNotice) showPopupError(failureNotice, "session-action",
@@ -671,9 +657,9 @@ function renderUI() {
     badge.append(dot, document.createTextNode(statusLabel));
     statusCell.appendChild(badge);
     const checkInRound = currentCheckInRound();
-    if (checkInRound && !student.fromRoster) {
-      const confirmed = student.checkInCycleId === sessionData?.checkInCycleId
-        && student.checkInRound === checkInRound;
+    if ((checkInRound || sessionData?.checkInPromptId) && !student.fromRoster) {
+      const confirmed = (!sessionData?.checkInPromptId || student.checkInPromptId === sessionData.checkInPromptId)
+        && (!checkInRound || (student.checkInCycleId === sessionData?.checkInCycleId && student.checkInRound === checkInRound));
       const checkInLabel = document.createElement("span");
       checkInLabel.className = `check-in-state${confirmed ? " confirmed" : " pending"}`;
       checkInLabel.textContent = confirmed ? "Confirmed" : "Awaiting check-in";
@@ -849,6 +835,7 @@ btnStart.addEventListener("click", async () => {
       await updateDoc(sessionRef, {
         status: "running",
         ...(nextRun ? { runId: crypto.randomUUID(), startedAt: serverTimestamp() } : {}),
+        ...(nextRun ? { checkInPromptId: null, checkInPromptAt: null } : {}),
         resumedAt: serverTimestamp(),
         checkInIntervalMinutes: selectedCheckInInterval,
         checkInCycleId: crypto.randomUUID(),
@@ -905,25 +892,41 @@ checkInIntervalSelect.addEventListener("change", async () => {
   }
 });
 
+requestCheckInButton.addEventListener("click", async () => {
+  if (!isGoogleAccount(user) || !sessionData || sessionData.hostUid !== user.uid
+    || sessionData.status !== "running" || pendingAction) return;
+  const completed = await runSessionAction(requestCheckInButton, "Sending…", () => updateDoc(doc(db, "sessions", meetCode), {
+    checkInPromptId: crypto.randomUUID(),
+    checkInPromptAt: serverTimestamp(),
+  }), "Could not request an activity check-in");
+  if (completed) setNotice("Activity check-in sent to participants.");
+});
+
 confirmActivityButton.addEventListener("click", async () => {
   if (confirmActivityButton.disabled) return;
-  if (participantPreviewMode) {
-    participantPreviewConfirmed = true;
-    updateParticipantCheckIn();
-    return;
-  }
   const round = currentCheckInRound();
   const cycleId = sessionData?.checkInCycleId;
+  let checkInRequest;
+  try {
+    const { activityCheckInAcks } = await chrome.storage.local.get("activityCheckInAcks");
+    const ack = activityCheckInAcks?.[meetCode];
+    const promptId = sessionData?.checkInPromptId;
+    const promptPending = Boolean(promptId && !(ack?.meetCode === meetCode
+      && ack?.runId === sessionData?.runId && ack?.promptId === promptId));
+    checkInRequest = promptPending ? { promptId } : { round, cycleId };
+  } catch {
+    checkInRequest = { round, cycleId };
+  }
   confirmActivityButton.disabled = true;
   confirmActivityButton.textContent = "Sending…";
   try {
-    await retryContentAction("check-in", { round, cycleId });
+    await retryContentAction("check-in", checkInRequest);
     clearPopupError("activity-check-in");
     confirmActivityButton.textContent = "Confirmed";
     activityCheckIn.hidden = true;
     updateParticipantCheckIn();
   } catch (error) {
-    showPopupError(`Could not confirm activity: ${error.message}`, "activity-check-in", () => retryContentAction("check-in", { round, cycleId }));
+    showPopupError(`Could not confirm activity: ${error.message}`, "activity-check-in", () => retryContentAction("check-in", checkInRequest));
   } finally {
     confirmActivityButton.disabled = false;
     if (!activityCheckIn.hidden) confirmActivityButton.textContent = "I'm here";
@@ -938,8 +941,6 @@ function useActiveTab(tab) {
     return;
   }
   meetCode = nextMeetCode;
-  participantPreviewMode = false;
-  participantPreviewConfirmed = false;
   rosterNames = [];
   hostControlsVisible = false;
   listenToMeeting();
@@ -1009,19 +1010,6 @@ async function refreshHostDetection() {
 }
 
 refreshHostDetectionButton.addEventListener("click", refreshHostDetection);
-
-previewCheckInButton.addEventListener("click", () => {
-  participantPreviewMode = true;
-  participantPreviewConfirmed = false;
-  updateControls();
-});
-
-exitCheckInPreviewButton.addEventListener("click", () => {
-  participantPreviewMode = false;
-  participantPreviewConfirmed = false;
-  updateControls();
-  updateParticipantCheckIn();
-});
 
 function refreshActiveTab() {
   chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => useActiveTab(tab));
