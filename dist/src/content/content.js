@@ -29334,11 +29334,10 @@ This typically indicates that your device does not have a healthy Internet conne
     return [...names.values()].sort((a, b2) => a.localeCompare(b2));
   }
   function getParticipantRowName(row) {
-    const textRow = row.cloneNode(true);
-    textRow.querySelectorAll('button, [role="button"], svg, [aria-hidden="true"]').forEach((control) => control.remove());
-    const text = (textRow.innerText || textRow.textContent || "").replace(/You can't unmute someone else/gi, " ").replace(/domain_disabled/gi, " ").replace(/Visitor/gi, " ").replace(/More actions?/gi, " ").replace(/more_vert/gi, " ").replace(/devices?/gi, " ");
-    const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
-    return lines[0]?.replace(/\s*\(You\)\s*/i, " ").trim() ?? "";
+    const accessibleText = Array.from(row.querySelectorAll("[aria-label], [title], [data-tooltip]")).map((element) => ["aria-label", "title", "data-tooltip"].map((attribute) => element.getAttribute(attribute) || "").filter(Boolean).join(" "));
+    const text = [row.innerText || row.textContent || "", ...accessibleText].join("\n");
+    const lines = text.split(/\r?\n/).map((line) => line.replace(/You can't unmute someone else/gi, " ").replace(/\bdomain_disabled\b/gi, " ").replace(/\bVisitor\b/gi, " ").replace(/\bMore actions?\b/gi, " ").replace(/\bmore_vert\b/gi, " ").replace(/\bdevices?\b/gi, " ").replace(/\(\s*You\s*\)/gi, " ").replace(/\bYou\b/gi, " ").replace(/\s+/g, " ").trim()).filter((line) => isCleanName(line) && !/^meet(?:ing)? participant$/i.test(line));
+    return lines[0] ?? "";
   }
   function normalizeParticipantName(name4) {
     return String(name4 || "").normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
@@ -29735,21 +29734,44 @@ This typically indicates that your device does not have a healthy Internet conne
       return;
     }
     if (message.action === "check-in") {
-      const round = currentCheckInRound();
-      const cycleId = session?.checkInCycleId || "";
-      const promptId = message.promptId;
-      const instantPromptMatches = Boolean(promptId && session?.status === "running" && session?.checkInPromptId === promptId);
-      const periodicCheckInMatches = Boolean(!promptId && round && round === message.round && cycleId && cycleId === message.cycleId);
-      if (!instantPromptMatches && !periodicCheckInMatches) {
-        sendResponse({ ok: false, message: "That activity check has expired. Refresh the side panel." });
-        return;
-      }
-      const responseFields = instantPromptMatches ? {
-        checkInPromptId: promptId,
-        ...round && cycleId ? { checkInCycleId: cycleId, checkInRound: round } : {},
-        checkInAt: serverTimestamp()
-      } : { checkInRound: round, checkInCycleId: cycleId, checkInAt: serverTimestamp() };
-      void reportStatus(true, lastStatus ?? getCurrentStatus(), responseFields).then(async (ok) => {
+      void (async () => {
+        if (!meetCode || !meetingActive || !currentUid) {
+          throw new Error("Join the active Google Meet before confirming.");
+        }
+        const latestSessionSnapshot = await getDoc(doc(db, "sessions", meetCode));
+        if (!latestSessionSnapshot.exists()) {
+          throw new Error("The host's session is no longer available.");
+        }
+        const latestSession = latestSessionSnapshot.data();
+        if (latestSession.runId !== message.runId) {
+          throw new Error("That activity check has expired. Wait for the host to send a new check-in.");
+        }
+        if (latestSession.runId !== currentRunId) {
+          durationLoadedRunId = null;
+          durationLoadPromise = null;
+          activeDurationMs = 0;
+          awayDurationMs = 0;
+          durationStatus = null;
+          durationLastReportedAt = null;
+          lastStatus = null;
+          lastHeartbeatAt = 0;
+          currentRunId = latestSession.runId;
+        }
+        session = latestSession;
+        const round = currentCheckInRound();
+        const cycleId = session.checkInCycleId || "";
+        const promptId = message.promptId;
+        const instantPromptMatches = Boolean(promptId && session.status === "running" && session.checkInPromptId === promptId);
+        const periodicCheckInMatches = Boolean(!promptId && round && round === message.round && cycleId && cycleId === message.cycleId);
+        if (session.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid || !instantPromptMatches && !periodicCheckInMatches) {
+          throw new Error("That activity check has expired. Wait for the host to send a new check-in.");
+        }
+        const responseFields = instantPromptMatches ? {
+          checkInPromptId: promptId,
+          ...round && cycleId ? { checkInCycleId: cycleId, checkInRound: round } : {},
+          checkInAt: serverTimestamp()
+        } : { checkInRound: round, checkInCycleId: cycleId, checkInAt: serverTimestamp() };
+        const ok = await reportStatus(true, lastStatus ?? getCurrentStatus(), responseFields);
         if (!ok) throw new Error("Your activity confirmation could not be saved.");
         const stored = await chrome.storage.local.get("activityCheckInAcks");
         const checkInAcks = stored.activityCheckInAcks ?? {};
@@ -29764,7 +29786,7 @@ This typically indicates that your device does not have a healthy Internet conne
         await chrome.storage.local.set({ activityCheckInAcks: checkInAcks });
         updateCheckInBadge();
         sendResponse({ ok: true });
-      }).catch((error) => sendResponse({ ok: false, message: error.message }));
+      })().catch((error) => sendResponse({ ok: false, message: error.message }));
       return true;
     }
     if (message.action === "auth") {

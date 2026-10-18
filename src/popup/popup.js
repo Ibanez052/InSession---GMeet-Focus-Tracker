@@ -913,9 +913,11 @@ confirmActivityButton.addEventListener("click", async () => {
     const promptId = sessionData?.checkInPromptId;
     const promptPending = Boolean(promptId && !(ack?.meetCode === meetCode
       && ack?.runId === sessionData?.runId && ack?.promptId === promptId));
-    checkInRequest = promptPending ? { promptId } : { round, cycleId };
+    checkInRequest = promptPending
+      ? { promptId, runId: sessionData?.runId }
+      : { round, cycleId, runId: sessionData?.runId };
   } catch {
-    checkInRequest = { round, cycleId };
+    checkInRequest = { round, cycleId, runId: sessionData?.runId };
   }
   confirmActivityButton.disabled = true;
   confirmActivityButton.textContent = "Sending…";
