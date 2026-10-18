@@ -1,5 +1,5 @@
 import { onAuthStateChanged, signInAnonymously } from "firebase/auth/web-extension";
-import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { deleteDoc, doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
 const MEET_UI = Object.freeze({
@@ -21,7 +21,7 @@ const MEET_UI = Object.freeze({
   googleAccount: '[aria-label*="Google Account:" i]',
   selfName: "[data-self-name]",
   participantRows: '[role="listitem"]',
-  youLabel: /\(You\)/i
+  youLabel: /(?:\(\s*You\s*\)|(?:^|[\s,])You(?:$|[\s,]))/i
 });
 const AWAY_DEBOUNCE_MS = 5000;
 const HEARTBEAT_MS = 30000;
@@ -32,6 +32,7 @@ let currentRunId = null;
 let currentUid = null;
 let currentName = null;
 let storedHostUid = null;
+let storedHostUidLoaded = false;
 let stopSessionListener = null;
 let meetingActive = false;
 let meetingContextTimer = null;
@@ -62,7 +63,7 @@ function getParticipantRoster() {
   const names = new Map();
   const ownName = normalizeParticipantName(findMyName());
   for (const row of document.querySelectorAll(MEET_UI.participantRows)) {
-    if (MEET_UI.youLabel.test(row.textContent || "")) continue;
+    if (isSelfParticipantRow(row)) continue;
     const name = getParticipantRowName(row);
     if (!name || name.length > 80) continue;
     if (ownName && normalizeParticipantName(name) === ownName) continue;
@@ -71,20 +72,33 @@ function getParticipantRoster() {
   return [...names.values()].sort((a, b) => a.localeCompare(b));
 }
 
-function getParticipantRowName(row) {
-  const accessibleText = Array.from(row.querySelectorAll("[aria-label], [title], [data-tooltip]"))
+function participantRowAccessibleText(row) {
+  return Array.from(row.querySelectorAll("[aria-label], [title], [data-tooltip]"))
     .map((element) => ["aria-label", "title", "data-tooltip"]
       .map((attribute) => element.getAttribute(attribute) || "")
       .filter(Boolean)
       .join(" "));
+}
+
+function isSelfParticipantRow(row) {
+  if (row.matches('[data-is-self="true"], [data-self="true"]')) return true;
+  const text = [row.innerText || row.textContent || "", ...participantRowAccessibleText(row)]
+    .join(" ")
+    .replace(/You can't unmute someone else/gi, " ");
+  return MEET_UI.youLabel.test(text);
+}
+
+function getParticipantRowName(row) {
+  const accessibleText = participantRowAccessibleText(row);
   const text = [row.innerText || row.textContent || "", ...accessibleText].join("\n");
   const lines = text.split(/\r?\n/).map((line) => line
     .replace(/You can't unmute someone else/gi, " ")
-    .replace(/\bdomain_disabled\b/gi, " ")
-    .replace(/\bVisitor\b/gi, " ")
+    .replace(/domain_disabled/gi, " ")
+    .replace(/Visitor/gi, " ")
     .replace(/\bMore actions?\b/gi, " ")
-    .replace(/\bmore_vert\b/gi, " ")
-    .replace(/\bdevices?\b/gi, " ")
+    .replace(/more_vert/gi, " ")
+    .replace(/devices?/gi, " ")
+    .replace(/\bactions?\b/gi, " ")
     .replace(/\(\s*You\s*\)/gi, " ")
     .replace(/\bYou\b/gi, " ")
     .replace(/\s+/g, " ")
@@ -267,15 +281,16 @@ function isCleanName(value) {
 }
 
 function findMyName() {
-  const account = document.querySelector(MEET_UI.googleAccount)?.getAttribute("aria-label") ?? "";
-  const accountMatch = account.match(/Google Account:\s*([^,(]+)/i);
-  if (isCleanName(accountMatch?.[1])) return accountMatch[1].trim();
   const self = document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name");
   if (isCleanName(self)) return self.trim();
   const you = Array.from(document.querySelectorAll(MEET_UI.participantRows))
-    .find((el) => MEET_UI.youLabel.test(el.textContent ?? ""));
+    .find(isSelfParticipantRow);
   const text = you ? getParticipantRowName(you) : null;
-  return isCleanName(text) ? text : auth.currentUser?.displayName || null;
+  if (isCleanName(text)) return text;
+  const account = document.querySelector(MEET_UI.googleAccount)?.getAttribute("aria-label") ?? "";
+  const accountMatch = account.match(/Google Account:\s*([^,(]+)/i);
+  if (isCleanName(accountMatch?.[1])) return accountMatch[1].trim();
+  return auth.currentUser?.displayName || null;
 }
 
 function removeTrackingNotice() {
@@ -287,6 +302,13 @@ function dismissTrackingNotice() {
   privacyNoticeDismissedRun = `${meetCode}:${session?.runId || ""}`;
   chrome.storage.local.set({ privacyNoticeDismissedRun });
   removeTrackingNotice();
+}
+
+function removeLocalHostAttendanceRecord() {
+  if (!meetCode || !currentUid || !session?.hostUid
+    || (session.hostUid !== storedHostUid && session.hostUid !== currentUid)) return;
+  void deleteDoc(doc(db, "sessions", meetCode, "students", currentUid))
+    .catch((error) => console.warn("[InSession] Could not remove this host's participant record:", error));
 }
 
 function renderTrackingNotice() {
@@ -375,6 +397,7 @@ function listenForSession() {
     }
     renderTrackingNotice();
     if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
+      removeLocalHostAttendanceRecord();
       if (heartbeatTimer !== null) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
@@ -474,14 +497,15 @@ function reportStatus(forceHeartbeat = false, statusOverride = null, additionalF
 }
 
 async function writeStatus(forceHeartbeat = false, statusOverride = null, additionalFields = {}) {
-  if (!currentUid || !meetingActive || !session || session.status !== "running"
+  if (!currentUid || !storedHostUidLoaded || !meetingActive || !session || session.status !== "running"
     || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
   const name = findMyName();
   if (name) currentName = name;
   const status = statusOverride ?? getCurrentStatus();
   const reportRunId = currentRunId;
   await ensureDurationState(Date.now());
-  if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId) return false;
+  if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId
+    || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
   const now = Date.now();
   if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 30000) return false;
   let nextActiveDurationMs = activeDurationMs;
@@ -568,19 +592,22 @@ onAuthStateChanged(auth, async (user) => {
 
 chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun"], ({ hostUid, privacyNoticeDismissedRun: dismissedRun }) => {
   storedHostUid = hostUid ?? null;
+  storedHostUidLoaded = true;
   privacyNoticeDismissedRun = dismissedRun ?? null;
   privacyNoticeDismissalLoaded = true;
   renderTrackingNotice();
   updateCheckInBadge();
-  if (session?.status === "running" && session.hostUid === storedHostUid) lastStatus = null;
+  listenForSession();
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   if (changes.hostUid) {
     storedHostUid = changes.hostUid.newValue ?? null;
+    storedHostUidLoaded = true;
     renderTrackingNotice();
     updateCheckInBadge();
     if (session?.hostUid === storedHostUid) lastStatus = null;
+    removeLocalHostAttendanceRecord();
   }
   if (changes.activityCheckInAcks) {
     checkInAck = changes.activityCheckInAcks.newValue?.[meetCode] ?? null;

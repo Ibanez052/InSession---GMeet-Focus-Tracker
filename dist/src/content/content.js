@@ -29175,6 +29175,9 @@ This typically indicates that your device does not have a healthy Internet conne
     const r2 = ra(e2.firestore, da), s2 = __PRIVATE_applyFirestoreDataConverter(e2.converter, t2, n2), a = la(r2);
     return executeWrite(r2, [__PRIVATE_parseSetData(a, "setDoc", e2._key, s2, null !== e2.converter, n2).toMutation(e2._key, Precondition.none())]);
   }
+  function deleteDoc(e2) {
+    return executeWrite(ra(e2.firestore, da), [new __PRIVATE_DeleteMutation(e2._key, Precondition.none())]);
+  }
   function onSnapshot(e2, ...t2) {
     e2 = getModularInstance(e2);
     let n2 = {
@@ -29289,7 +29292,7 @@ This typically indicates that your device does not have a healthy Internet conne
     googleAccount: '[aria-label*="Google Account:" i]',
     selfName: "[data-self-name]",
     participantRows: '[role="listitem"]',
-    youLabel: /\(You\)/i
+    youLabel: /(?:\(\s*You\s*\)|(?:^|[\s,])You(?:$|[\s,]))/i
   });
   var AWAY_DEBOUNCE_MS = 5e3;
   var HEARTBEAT_MS = 3e4;
@@ -29300,6 +29303,7 @@ This typically indicates that your device does not have a healthy Internet conne
   var currentUid = null;
   var currentName = null;
   var storedHostUid = null;
+  var storedHostUidLoaded = false;
   var stopSessionListener = null;
   var meetingActive = false;
   var meetingContextTimer = null;
@@ -29329,7 +29333,7 @@ This typically indicates that your device does not have a healthy Internet conne
     const names = /* @__PURE__ */ new Map();
     const ownName = normalizeParticipantName(findMyName());
     for (const row of document.querySelectorAll(MEET_UI.participantRows)) {
-      if (MEET_UI.youLabel.test(row.textContent || "")) continue;
+      if (isSelfParticipantRow(row)) continue;
       const name4 = getParticipantRowName(row);
       if (!name4 || name4.length > 80) continue;
       if (ownName && normalizeParticipantName(name4) === ownName) continue;
@@ -29337,10 +29341,18 @@ This typically indicates that your device does not have a healthy Internet conne
     }
     return [...names.values()].sort((a, b2) => a.localeCompare(b2));
   }
+  function participantRowAccessibleText(row) {
+    return Array.from(row.querySelectorAll("[aria-label], [title], [data-tooltip]")).map((element) => ["aria-label", "title", "data-tooltip"].map((attribute) => element.getAttribute(attribute) || "").filter(Boolean).join(" "));
+  }
+  function isSelfParticipantRow(row) {
+    if (row.matches('[data-is-self="true"], [data-self="true"]')) return true;
+    const text = [row.innerText || row.textContent || "", ...participantRowAccessibleText(row)].join(" ").replace(/You can't unmute someone else/gi, " ");
+    return MEET_UI.youLabel.test(text);
+  }
   function getParticipantRowName(row) {
-    const accessibleText = Array.from(row.querySelectorAll("[aria-label], [title], [data-tooltip]")).map((element) => ["aria-label", "title", "data-tooltip"].map((attribute) => element.getAttribute(attribute) || "").filter(Boolean).join(" "));
+    const accessibleText = participantRowAccessibleText(row);
     const text = [row.innerText || row.textContent || "", ...accessibleText].join("\n");
-    const lines = text.split(/\r?\n/).map((line) => line.replace(/You can't unmute someone else/gi, " ").replace(/\bdomain_disabled\b/gi, " ").replace(/\bVisitor\b/gi, " ").replace(/\bMore actions?\b/gi, " ").replace(/\bmore_vert\b/gi, " ").replace(/\bdevices?\b/gi, " ").replace(/\(\s*You\s*\)/gi, " ").replace(/\bYou\b/gi, " ").replace(/\s+/g, " ").trim()).filter((line) => isCleanName(line) && !/^meet(?:ing)? participant$/i.test(line));
+    const lines = text.split(/\r?\n/).map((line) => line.replace(/You can't unmute someone else/gi, " ").replace(/domain_disabled/gi, " ").replace(/Visitor/gi, " ").replace(/\bMore actions?\b/gi, " ").replace(/more_vert/gi, " ").replace(/devices?/gi, " ").replace(/\bactions?\b/gi, " ").replace(/\(\s*You\s*\)/gi, " ").replace(/\bYou\b/gi, " ").replace(/\s+/g, " ").trim()).filter((line) => isCleanName(line) && !/^meet(?:ing)? participant$/i.test(line));
     return lines[0] ?? "";
   }
   function normalizeParticipantName(name4) {
@@ -29497,14 +29509,15 @@ This typically indicates that your device does not have a healthy Internet conne
     return Boolean(name4 && name4.length >= 2 && name4.length <= 80);
   }
   function findMyName() {
+    const self2 = document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name");
+    if (isCleanName(self2)) return self2.trim();
+    const you = Array.from(document.querySelectorAll(MEET_UI.participantRows)).find(isSelfParticipantRow);
+    const text = you ? getParticipantRowName(you) : null;
+    if (isCleanName(text)) return text;
     const account = document.querySelector(MEET_UI.googleAccount)?.getAttribute("aria-label") ?? "";
     const accountMatch = account.match(/Google Account:\s*([^,(]+)/i);
     if (isCleanName(accountMatch?.[1])) return accountMatch[1].trim();
-    const self2 = document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name");
-    if (isCleanName(self2)) return self2.trim();
-    const you = Array.from(document.querySelectorAll(MEET_UI.participantRows)).find((el) => MEET_UI.youLabel.test(el.textContent ?? ""));
-    const text = you ? getParticipantRowName(you) : null;
-    return isCleanName(text) ? text : auth.currentUser?.displayName || null;
+    return auth.currentUser?.displayName || null;
   }
   function removeTrackingNotice() {
     privacyNoticeHost?.remove();
@@ -29514,6 +29527,10 @@ This typically indicates that your device does not have a healthy Internet conne
     privacyNoticeDismissedRun = `${meetCode}:${session?.runId || ""}`;
     chrome.storage.local.set({ privacyNoticeDismissedRun });
     removeTrackingNotice();
+  }
+  function removeLocalHostAttendanceRecord() {
+    if (!meetCode || !currentUid || !session?.hostUid || session.hostUid !== storedHostUid && session.hostUid !== currentUid) return;
+    void deleteDoc(doc(db, "sessions", meetCode, "students", currentUid)).catch((error) => console.warn("[InSession] Could not remove this host's participant record:", error));
   }
   function renderTrackingNotice() {
     const isHost = Boolean(session?.hostUid && (session.hostUid === currentUid || session.hostUid === storedHostUid));
@@ -29599,6 +29616,7 @@ This typically indicates that your device does not have a healthy Internet conne
       }
       renderTrackingNotice();
       if (session?.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) {
+        removeLocalHostAttendanceRecord();
         if (heartbeatTimer !== null) {
           clearInterval(heartbeatTimer);
           heartbeatTimer = null;
@@ -29691,13 +29709,13 @@ This typically indicates that your device does not have a healthy Internet conne
     return statusWriteQueue;
   }
   async function writeStatus(forceHeartbeat = false, statusOverride = null, additionalFields = {}) {
-    if (!currentUid || !meetingActive || !session || session.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
+    if (!currentUid || !storedHostUidLoaded || !meetingActive || !session || session.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
     const name4 = findMyName();
     if (name4) currentName = name4;
     const status = statusOverride ?? getCurrentStatus();
     const reportRunId = currentRunId;
     await ensureDurationState(Date.now());
-    if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId) return false;
+    if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId || session.hostUid === currentUid || session.hostUid === storedHostUid) return false;
     const now = Date.now();
     if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 3e4) return false;
     let nextActiveDurationMs = activeDurationMs;
@@ -29780,19 +29798,22 @@ This typically indicates that your device does not have a healthy Internet conne
   });
   chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun"], ({ hostUid, privacyNoticeDismissedRun: dismissedRun }) => {
     storedHostUid = hostUid ?? null;
+    storedHostUidLoaded = true;
     privacyNoticeDismissedRun = dismissedRun ?? null;
     privacyNoticeDismissalLoaded = true;
     renderTrackingNotice();
     updateCheckInBadge();
-    if (session?.status === "running" && session.hostUid === storedHostUid) lastStatus = null;
+    listenForSession();
   });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (changes.hostUid) {
       storedHostUid = changes.hostUid.newValue ?? null;
+      storedHostUidLoaded = true;
       renderTrackingNotice();
       updateCheckInBadge();
       if (session?.hostUid === storedHostUid) lastStatus = null;
+      removeLocalHostAttendanceRecord();
     }
     if (changes.activityCheckInAcks) {
       checkInAck = changes.activityCheckInAcks.newValue?.[meetCode] ?? null;
