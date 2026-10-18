@@ -131,6 +131,16 @@
       text-align: left;
     }
     .activity-check-in .btn { width: 100%; margin-top: 12px; }
+    .check-in-preview-note {
+      max-width: 340px;
+      padding: 8px 10px;
+      border: 1px solid #e6c46c;
+      border-radius: 8px;
+      background: #fff9e7;
+      color: #735c1d !important;
+      font-size: 12px !important;
+    }
+    .preview-check-in-btn { align-self: flex-start; }
     .check-in-settings {
       display: flex;
       align-items: center;

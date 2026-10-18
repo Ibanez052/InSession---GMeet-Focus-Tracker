@@ -20,6 +20,9 @@ const participantMessage = byId("participant-message");
 const retryParticipantErrorButton = byId("retry-participant-error");
 const retrySessionErrorButton = byId("retry-session-error");
 const refreshHostDetectionButton = byId("refresh-host-detection");
+const previewCheckInButton = byId("preview-check-in");
+const checkInPreviewNote = byId("check-in-preview-note");
+const exitCheckInPreviewButton = byId("exit-check-in-preview");
 const btnStart = byId("start-session");
 const btnPause = byId("pause-session");
 const btnEnd = byId("end-session");
@@ -48,10 +51,17 @@ let stopStudentsListener = null;
 let pendingAction = null;
 let pendingActionLabel = "";
 let anonymousAuthPromise = null;
+let authStateInitialized = false;
+let resolveAuthStateInitialized;
+const authStateInitializedPromise = new Promise((resolve) => {
+  resolveAuthStateInitialized = resolve;
+});
 let stalenessTimer = null;
 let checkInRefreshTimer = null;
 let selectedCheckInInterval = 0;
 let endConfirmationPending = false;
+let participantPreviewMode = false;
+let participantPreviewConfirmed = false;
 const STALE_AFTER_MS = 60_000;
 const DELETE_BATCH_SIZE = 450;
 
@@ -228,6 +238,12 @@ function updateParticipantCheckIn() {
   const round = currentCheckInRound();
   const cycleId = sessionData?.checkInCycleId || "";
   chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
+    if (participantPreviewMode) {
+      activityCheckIn.hidden = false;
+      confirmActivityButton.disabled = participantPreviewConfirmed;
+      confirmActivityButton.textContent = participantPreviewConfirmed ? "Confirmed (preview)" : "I'm here";
+      return;
+    }
     const activityCheckInAck = activityCheckInAcks?.[meetCode];
     const pending = Boolean(round && cycleId && user && sessionData?.hostUid !== user.uid && !(
       activityCheckInAck?.meetCode === meetCode
@@ -387,7 +403,9 @@ function isGoogleAccount(account) {
 }
 
 function ensureParticipantAuth() {
-  if (!meetCode || user) return Promise.resolve();
+  if (!meetCode) return Promise.resolve();
+  if (!authStateInitialized) return authStateInitializedPromise.then(() => ensureParticipantAuth());
+  if (user) return Promise.resolve();
   if (anonymousAuthPromise) return anonymousAuthPromise;
   anonymousAuthPromise = signInAnonymously(auth)
     .catch((error) => {
@@ -435,12 +453,21 @@ function scheduleStalenessRefresh(now = Date.now()) {
 
 function updateControls() {
   const isGoogleUser = isGoogleAccount(user);
-  const isHost = Boolean(isGoogleUser && meetCode && hostControlsVisible
-    && (!sessionData || sessionData.hostUid === user.uid));
+  const ownsCurrentSession = Boolean(sessionData?.hostUid && sessionData.hostUid === user?.uid);
+  const isHost = Boolean(isGoogleUser && meetCode
+    && (ownsCurrentSession || (!sessionData && hostControlsVisible)));
+  if (!isHost && participantPreviewMode) {
+    participantPreviewMode = false;
+    participantPreviewConfirmed = false;
+  }
+  const isPreviewingCheckIn = isHost && participantPreviewMode;
   hostControls.hidden = !isHost;
-  hostDashboard.hidden = !isHost;
-  participantView.hidden = isHost;
+  hostDashboard.hidden = !isHost || isPreviewingCheckIn;
+  participantView.hidden = isHost && !isPreviewingCheckIn;
   checkInSettings.hidden = !isHost;
+  previewCheckInButton.hidden = !isHost || isPreviewingCheckIn;
+  checkInPreviewNote.hidden = !isPreviewingCheckIn;
+  exitCheckInPreviewButton.hidden = !isPreviewingCheckIn;
   if (isHost) {
     checkInIntervalSelect.value = String(sessionData?.checkInIntervalMinutes ?? selectedCheckInInterval);
     selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;
@@ -451,7 +478,14 @@ function updateControls() {
   signInButton.hidden = !hostControlsVisible || isGoogleUser
     || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid);
   signInButton.textContent = user?.isAnonymous ? "Sign in as instructor" : "Instructor sign-in";
-  signOutButton.hidden = !isGoogleUser;
+  signOutButton.hidden = !isGoogleUser || isPreviewingCheckIn;
+
+  if (isPreviewingCheckIn) {
+    accountStatus.textContent = "Participant preview";
+    setParticipantNotice("Attendance is being tracked", `Your status is shared with the host for meeting ${meetCode}.`);
+    updateParticipantCheckIn();
+    return;
+  }
 
   if (isHost) {
     accountStatus.textContent = `Signed in as ${user.displayName || user.email || "Google account"}`;
@@ -827,6 +861,11 @@ checkInIntervalSelect.addEventListener("change", async () => {
 
 confirmActivityButton.addEventListener("click", async () => {
   if (confirmActivityButton.disabled) return;
+  if (participantPreviewMode) {
+    participantPreviewConfirmed = true;
+    updateParticipantCheckIn();
+    return;
+  }
   const round = currentCheckInRound();
   const cycleId = sessionData?.checkInCycleId;
   confirmActivityButton.disabled = true;
@@ -853,6 +892,8 @@ function useActiveTab(tab) {
     return;
   }
   meetCode = nextMeetCode;
+  participantPreviewMode = false;
+  participantPreviewConfirmed = false;
   rosterNames = [];
   hostControlsVisible = false;
   listenToMeeting();
@@ -922,6 +963,19 @@ async function refreshHostDetection() {
 
 refreshHostDetectionButton.addEventListener("click", refreshHostDetection);
 
+previewCheckInButton.addEventListener("click", () => {
+  participantPreviewMode = true;
+  participantPreviewConfirmed = false;
+  updateControls();
+});
+
+exitCheckInPreviewButton.addEventListener("click", () => {
+  participantPreviewMode = false;
+  participantPreviewConfirmed = false;
+  updateControls();
+  updateParticipantCheckIn();
+});
+
 function refreshActiveTab() {
   chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => useActiveTab(tab));
 }
@@ -934,6 +988,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 onAuthStateChanged(auth, (signedInUser) => {
   user = signedInUser;
+  if (!authStateInitialized) {
+    authStateInitialized = true;
+    resolveAuthStateInitialized();
+  }
   if (user) clearPopupError("participant-auth");
   if (isGoogleAccount(user)) chrome.storage.local.set({ hostUid: user.uid });
   listenToMeeting();

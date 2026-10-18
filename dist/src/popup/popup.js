@@ -29585,6 +29585,9 @@ var participantMessage = byId("participant-message");
 var retryParticipantErrorButton = byId("retry-participant-error");
 var retrySessionErrorButton = byId("retry-session-error");
 var refreshHostDetectionButton = byId("refresh-host-detection");
+var previewCheckInButton = byId("preview-check-in");
+var checkInPreviewNote = byId("check-in-preview-note");
+var exitCheckInPreviewButton = byId("exit-check-in-preview");
 var btnStart = byId("start-session");
 var btnPause = byId("pause-session");
 var btnEnd = byId("end-session");
@@ -29612,10 +29615,17 @@ var stopStudentsListener = null;
 var pendingAction = null;
 var pendingActionLabel = "";
 var anonymousAuthPromise = null;
+var authStateInitialized = false;
+var resolveAuthStateInitialized;
+var authStateInitializedPromise = new Promise((resolve) => {
+  resolveAuthStateInitialized = resolve;
+});
 var stalenessTimer = null;
 var checkInRefreshTimer = null;
 var selectedCheckInInterval = 0;
 var endConfirmationPending = false;
+var participantPreviewMode = false;
+var participantPreviewConfirmed = false;
 var STALE_AFTER_MS = 6e4;
 var DELETE_BATCH_SIZE = 450;
 function getGoogleAccessToken() {
@@ -29766,6 +29776,12 @@ function updateParticipantCheckIn() {
   const round = currentCheckInRound();
   const cycleId = sessionData?.checkInCycleId || "";
   chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
+    if (participantPreviewMode) {
+      activityCheckIn.hidden = false;
+      confirmActivityButton.disabled = participantPreviewConfirmed;
+      confirmActivityButton.textContent = participantPreviewConfirmed ? "Confirmed (preview)" : "I'm here";
+      return;
+    }
     const activityCheckInAck = activityCheckInAcks?.[meetCode];
     const pending = Boolean(round && cycleId && user && sessionData?.hostUid !== user.uid && !(activityCheckInAck?.meetCode === meetCode && activityCheckInAck?.runId === sessionData.runId && activityCheckInAck?.cycleId === cycleId && activityCheckInAck?.round === round));
     activityCheckIn.hidden = !pending;
@@ -29907,7 +29923,9 @@ function isGoogleAccount(account) {
   return Boolean(account?.providerData?.some((provider) => provider.providerId === "google.com"));
 }
 function ensureParticipantAuth() {
-  if (!meetCode || user) return Promise.resolve();
+  if (!meetCode) return Promise.resolve();
+  if (!authStateInitialized) return authStateInitializedPromise.then(() => ensureParticipantAuth());
+  if (user) return Promise.resolve();
   if (anonymousAuthPromise) return anonymousAuthPromise;
   anonymousAuthPromise = signInAnonymously(auth).catch((error) => {
     console.error("[InSession] Anonymous participant sign-in failed:", error);
@@ -29941,11 +29959,20 @@ function scheduleStalenessRefresh(now = Date.now()) {
 }
 function updateControls() {
   const isGoogleUser = isGoogleAccount(user);
-  const isHost = Boolean(isGoogleUser && meetCode && hostControlsVisible && (!sessionData || sessionData.hostUid === user.uid));
+  const ownsCurrentSession = Boolean(sessionData?.hostUid && sessionData.hostUid === user?.uid);
+  const isHost = Boolean(isGoogleUser && meetCode && (ownsCurrentSession || !sessionData && hostControlsVisible));
+  if (!isHost && participantPreviewMode) {
+    participantPreviewMode = false;
+    participantPreviewConfirmed = false;
+  }
+  const isPreviewingCheckIn = isHost && participantPreviewMode;
   hostControls.hidden = !isHost;
-  hostDashboard.hidden = !isHost;
-  participantView.hidden = isHost;
+  hostDashboard.hidden = !isHost || isPreviewingCheckIn;
+  participantView.hidden = isHost && !isPreviewingCheckIn;
   checkInSettings.hidden = !isHost;
+  previewCheckInButton.hidden = !isHost || isPreviewingCheckIn;
+  checkInPreviewNote.hidden = !isPreviewingCheckIn;
+  exitCheckInPreviewButton.hidden = !isPreviewingCheckIn;
   if (isHost) {
     checkInIntervalSelect.value = String(sessionData?.checkInIntervalMinutes ?? selectedCheckInInterval);
     selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;
@@ -29954,7 +29981,13 @@ function updateControls() {
   refreshHostDetectionButton.hidden = !meetCode || hostControlsVisible || Boolean(sessionData?.hostUid && user?.uid && sessionData.hostUid !== user.uid);
   signInButton.hidden = !hostControlsVisible || isGoogleUser || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid);
   signInButton.textContent = user?.isAnonymous ? "Sign in as instructor" : "Instructor sign-in";
-  signOutButton.hidden = !isGoogleUser;
+  signOutButton.hidden = !isGoogleUser || isPreviewingCheckIn;
+  if (isPreviewingCheckIn) {
+    accountStatus.textContent = "Participant preview";
+    setParticipantNotice("Attendance is being tracked", `Your status is shared with the host for meeting ${meetCode}.`);
+    updateParticipantCheckIn();
+    return;
+  }
   if (isHost) {
     accountStatus.textContent = `Signed in as ${user.displayName || user.email || "Google account"}`;
     if (!meetCode) {
@@ -30302,6 +30335,11 @@ checkInIntervalSelect.addEventListener("change", async () => {
 });
 confirmActivityButton.addEventListener("click", async () => {
   if (confirmActivityButton.disabled) return;
+  if (participantPreviewMode) {
+    participantPreviewConfirmed = true;
+    updateParticipantCheckIn();
+    return;
+  }
   const round = currentCheckInRound();
   const cycleId = sessionData?.checkInCycleId;
   confirmActivityButton.disabled = true;
@@ -30327,6 +30365,8 @@ function useActiveTab(tab) {
     return;
   }
   meetCode = nextMeetCode;
+  participantPreviewMode = false;
+  participantPreviewConfirmed = false;
   rosterNames = [];
   hostControlsVisible = false;
   listenToMeeting();
@@ -30388,6 +30428,17 @@ async function refreshHostDetection() {
   });
 }
 refreshHostDetectionButton.addEventListener("click", refreshHostDetection);
+previewCheckInButton.addEventListener("click", () => {
+  participantPreviewMode = true;
+  participantPreviewConfirmed = false;
+  updateControls();
+});
+exitCheckInPreviewButton.addEventListener("click", () => {
+  participantPreviewMode = false;
+  participantPreviewConfirmed = false;
+  updateControls();
+  updateParticipantCheckIn();
+});
 function refreshActiveTab() {
   chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => useActiveTab(tab));
 }
@@ -30398,6 +30449,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 onAuthStateChanged(auth, (signedInUser) => {
   user = signedInUser;
+  if (!authStateInitialized) {
+    authStateInitialized = true;
+    resolveAuthStateInitialized();
+  }
   if (user) clearPopupError("participant-auth");
   if (isGoogleAccount(user)) chrome.storage.local.set({ hostUid: user.uid });
   listenToMeeting();
