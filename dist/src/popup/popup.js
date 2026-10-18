@@ -29594,6 +29594,7 @@ var checkInSettings = byId("check-in-settings");
 var checkInIntervalSelect = byId("check-in-interval");
 var requestCheckInButton = byId("request-check-in");
 var user = null;
+var localParticipantUid = null;
 var meetCode = null;
 var hostControlsVisible = false;
 var hostDetectionRequestId = 0;
@@ -29796,9 +29797,7 @@ function createAttendanceCsv(session, participantDocs, endedAtMs) {
   const pausedAtMs = toMillis(session.pausedAt);
   const resumedAtMs = toMillis(session.resumedAt);
   const trackingEndedAtMs = Number.isFinite(pausedAtMs) && (!Number.isFinite(resumedAtMs) || pausedAtMs > resumedAtMs) ? pausedAtMs : endedAtMs;
-  const rows = [["Record type", "Meeting code", "Session started (UTC)", "Session ended (UTC)", "Participant", "Final status", "Active duration estimate", "Away duration estimate", "Last activity confirmation (UTC)"]];
-  let activeTotalMs = 0;
-  let awayTotalMs = 0;
+  const rows = [["Participant", "Final status", "Active duration estimate", "Away duration estimate", "Last activity confirmation (UTC)", "Meeting code", "Session started (UTC)", "Session ended (UTC)"]];
   const participants = participantDocs.map((participantDoc) => {
     const student = participantDoc.data();
     const hasDurationData = typeof student.activeDurationMs === "number" && typeof student.awayDurationMs === "number";
@@ -29809,25 +29808,19 @@ function createAttendanceCsv(session, participantDocs, endedAtMs) {
     const finalSegmentMs = Number.isFinite(signalAgeMs) ? Math.max(0, Math.min(signalAgeMs, STALE_AFTER_MS, Math.max(0, trackingEndedAtMs - lastSeenMs))) : 0;
     if (student.status === "active") activeMs += finalSegmentMs;
     if (student.status === "away") awayMs += finalSegmentMs;
-    if (hasDurationData) {
-      activeTotalMs += activeMs;
-      awayTotalMs += awayMs;
-    }
     const finalStatus = student.status === "left" ? "Left" : signalAgeMs <= STALE_AFTER_MS && ["active", "away"].includes(student.status) ? student.status === "active" ? "Active" : "Away" : "Not reporting";
     const checkInAtMs = student.runId === session.runId && (session.checkInPromptId && student.checkInPromptId === session.checkInPromptId || session.checkInCycleId && student.checkInCycleId === session.checkInCycleId) ? toMillis(student.checkInAt) : Number.NaN;
     return [
-      "Participant",
-      session.meetCode,
-      startedAt,
-      endedAt,
-      student.name || "Meet participant",
+      student.name || "Unknown participant",
       finalStatus,
       hasDurationData ? formatDuration(activeMs) : "Unavailable in this extension version",
       hasDurationData ? formatDuration(awayMs) : "Unavailable in this extension version",
-      Number.isFinite(checkInAtMs) ? new Date(checkInAtMs).toISOString() : ""
+      Number.isFinite(checkInAtMs) ? new Date(checkInAtMs).toISOString() : "",
+      session.meetCode,
+      startedAt,
+      endedAt
     ];
   });
-  rows.push(["Known attendee duration total", session.meetCode, startedAt, endedAt, "", "", formatDuration(activeTotalMs), formatDuration(awayTotalMs), ""]);
   rows.push(...participants);
   return `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r
 `;
@@ -29892,7 +29885,7 @@ async function downloadOrClearEndedSession() {
     const studentsSnapshot = await getDocs(collection(sessionRef, "students"));
     const endedAtMs = toMillis(currentSession.endedAt) || Date.now();
     const currentRunStudents = studentsSnapshot.docs.filter(
-      (student) => student.id !== currentSession.hostUid && student.data().uid !== currentSession.hostUid && isCurrentRunStudent(student.data(), currentSession)
+      (student) => student.id !== currentSession.hostUid && student.data().uid !== currentSession.hostUid && student.id !== localParticipantUid && student.data().uid !== localParticipantUid && isCurrentRunStudent(student.data(), currentSession)
     );
     const csv = createAttendanceCsv(currentSession, currentRunStudents, endedAtMs);
     await downloadAttendanceCsv(csv, currentSession.meetCode || meetCode, endedAtMs);
@@ -30159,7 +30152,7 @@ function listenToMeeting() {
       stopStudentsListener = onSnapshot(collection(sessionRef, "students"), (students) => {
         clearPopupError("attendees-read");
         const hostRecord = students.docs.find(
-          (student) => student.id === sessionData.hostUid || student.data().uid === sessionData.hostUid
+          (student) => student.id === sessionData.hostUid || student.data().uid === sessionData.hostUid || localParticipantUid && (student.id === localParticipantUid || student.data().uid === localParticipantUid)
         );
         if (hostRecord) {
           void deleteDoc(doc(sessionRef, "students", hostRecord.id)).then(() => clearPopupError("host-record-cleanup")).catch((error) => {
@@ -30167,7 +30160,7 @@ function listenToMeeting() {
             showPopupError(`Could not remove the host from the attendee list: ${error.message}`, "host-record-cleanup", listenToMeeting);
           });
         }
-        studentsData = students.docs.filter((student) => student.id !== sessionData.hostUid && student.data().uid !== sessionData.hostUid).filter((student) => isCurrentRunStudent(student.data(), sessionData)).map((student) => ({ id: student.id, ...student.data() }));
+        studentsData = students.docs.filter((student) => student.id !== sessionData.hostUid && student.data().uid !== sessionData.hostUid).filter((student) => !localParticipantUid || student.id !== localParticipantUid && student.data().uid !== localParticipantUid).filter((student) => isCurrentRunStudent(student.data(), sessionData)).map((student) => ({ id: student.id, ...student.data() }));
         studentsData.sort((a, b2) => (a.name || "").localeCompare(b2.name || ""));
         renderUI();
       }, (error) => showPopupError(`Could not read attendees: ${error.message}`, "attendees-read", listenToMeeting));
@@ -30409,6 +30402,15 @@ refreshActiveTab();
 chrome.tabs.onActivated.addListener(refreshActiveTab);
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (tab.active && (changeInfo.url || changeInfo.status === "complete")) refreshActiveTab();
+});
+chrome.storage.local.get("participantUid", ({ participantUid }) => {
+  localParticipantUid = participantUid ?? null;
+  if (user && meetCode) listenToMeeting();
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.participantUid) return;
+  localParticipantUid = changes.participantUid.newValue ?? null;
+  if (user && meetCode) listenToMeeting();
 });
 onAuthStateChanged(auth, (signedInUser) => {
   user = signedInUser;

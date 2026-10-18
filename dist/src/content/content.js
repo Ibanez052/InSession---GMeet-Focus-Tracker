@@ -29793,6 +29793,7 @@ This typically indicates that your device does not have a healthy Internet conne
     }
     clearExtensionError("participant-auth");
     currentUid = user.uid;
+    chrome.storage.local.set({ participantUid: currentUid });
     if (user.displayName) currentName = user.displayName;
     listenForSession();
   });

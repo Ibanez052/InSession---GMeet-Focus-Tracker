@@ -586,6 +586,7 @@ onAuthStateChanged(auth, async (user) => {
   }
   clearExtensionError("participant-auth");
   currentUid = user.uid;
+  chrome.storage.local.set({ participantUid: currentUid });
   if (user.displayName) currentName = user.displayName;
   listenForSession();
 });
