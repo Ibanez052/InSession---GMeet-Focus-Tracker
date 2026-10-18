@@ -29297,6 +29297,7 @@ This typically indicates that your device does not have a healthy Internet conne
   var AWAY_DEBOUNCE_MS = 5e3;
   var HEARTBEAT_MS = 3e4;
   var DURATION_STALE_AFTER_MS = 6e4;
+  var TIMELINE_MAX_ENTRIES = 300;
   var MEET_STATE_POLL_MS = 1e3;
   var meetCode = null;
   var session = null;
@@ -29318,6 +29319,7 @@ This typically indicates that your device does not have a healthy Internet conne
   var durationLoadedRunId = null;
   var durationLoadPromise = null;
   var activeDurationMs = 0;
+  var timeline = [];
   var awayDurationMs = 0;
   var durationStatus = null;
   var durationLastReportedAt = null;
@@ -29753,6 +29755,7 @@ This typically indicates that your device does not have a healthy Internet conne
         durationLoadedRunId = null;
         durationLoadPromise = null;
         activeDurationMs = 0;
+        timeline = [];
         awayDurationMs = 0;
         durationStatus = null;
         durationLastReportedAt = null;
@@ -29790,8 +29793,30 @@ This typically indicates that your device does not have a healthy Internet conne
       scheduleStatusReport(refreshRequested || lastStatus === null);
     }, (error) => reportExtensionError("participant-session", error, "session"));
   }
+  var panelFocusUntil = 0;
+  var panelFocusTimer = null;
+  function panelHasFocus() {
+    return Date.now() < panelFocusUntil;
+  }
+  function setPanelFocus(focused) {
+    const before = panelHasFocus();
+    if (panelFocusTimer !== null) {
+      clearTimeout(panelFocusTimer);
+      panelFocusTimer = null;
+    }
+    if (focused) {
+      panelFocusUntil = Date.now() + 4e3;
+      panelFocusTimer = setTimeout(() => {
+        panelFocusTimer = null;
+        scheduleStatusReport(true);
+      }, 4100);
+    } else {
+      panelFocusUntil = 0;
+    }
+    if (before !== panelHasFocus()) scheduleStatusReport(true);
+  }
   function getCurrentStatus() {
-    return !document.hidden && document.hasFocus() ? "active" : "away";
+    return !document.hidden && (document.hasFocus() || panelHasFocus()) ? "active" : "away";
   }
   function scheduleStatusReport(forceHeartbeat = false) {
     if (!meetingActive) return;
@@ -29814,6 +29839,15 @@ This typically indicates that your device does not have a healthy Internet conne
   function timestampMillis(value) {
     return typeof value?.toMillis === "function" ? value.toMillis() : value instanceof Date ? value.getTime() : Number.NaN;
   }
+  function isTimelineEntry(entry) {
+    return Boolean(entry) && ["active", "away", "left"].includes(entry.s) && Number.isFinite(entry.t);
+  }
+  function appendTimelineEntry(entries, status, at2) {
+    if (!["active", "away", "left"].includes(status)) return entries;
+    if (entries[entries.length - 1]?.s === status) return entries;
+    const next = [...entries, { s: status, t: at2 }];
+    return next.length > TIMELINE_MAX_ENTRIES ? next.slice(next.length - TIMELINE_MAX_ENTRIES) : next;
+  }
   async function ensureDurationState(now) {
     const runId = currentRunId;
     if (!runId || durationLoadedRunId === runId) return;
@@ -29826,6 +29860,7 @@ This typically indicates that your device does not have a healthy Internet conne
           if (previous.runId === runId) {
             activeDurationMs = Number(previous.activeDurationMs) || 0;
             awayDurationMs = Number(previous.awayDurationMs) || 0;
+            timeline = Array.isArray(previous.timeline) ? previous.timeline.filter(isTimelineEntry).slice(-TIMELINE_MAX_ENTRIES) : [];
             const lastSeenMs = timestampMillis(previous.lastSeen);
             const resumedAtMs = timestampMillis(session?.resumedAt) || timestampMillis(session?.startedAt);
             const since = Math.max(lastSeenMs || now, resumedAtMs || 0, now - DURATION_STALE_AFTER_MS);
@@ -29872,6 +29907,7 @@ This typically indicates that your device does not have a healthy Internet conne
       if (durationStatus === "active") nextActiveDurationMs += elapsedMs;
       if (durationStatus === "away") nextAwayDurationMs += elapsedMs;
     }
+    const nextTimeline = appendTimelineEntry(timeline, status, now);
     await setDoc(doc(db, "sessions", meetCode, "students", currentUid), {
       uid: currentUid,
       name: currentName || "Meet participant",
@@ -29879,11 +29915,13 @@ This typically indicates that your device does not have a healthy Internet conne
       runId: reportRunId,
       activeDurationMs: nextActiveDurationMs,
       awayDurationMs: nextAwayDurationMs,
+      timeline: nextTimeline,
       lastSeen: serverTimestamp(),
       ...additionalFields
     }, { merge: true });
     activeDurationMs = nextActiveDurationMs;
     awayDurationMs = nextAwayDurationMs;
+    timeline = nextTimeline;
     durationStatus = ["active", "away"].includes(status) ? status : null;
     durationLastReportedAt = durationStatus ? now : null;
     lastStatus = status;
@@ -30000,6 +30038,7 @@ This typically indicates that your device does not have a healthy Internet conne
       durationLoadedRunId = null;
       durationLoadPromise = null;
       activeDurationMs = 0;
+      timeline = [];
       awayDurationMs = 0;
       durationStatus = null;
       durationLastReportedAt = null;
@@ -30040,6 +30079,17 @@ This typically indicates that your device does not have a healthy Internet conne
     if (message?.type === "in-session:get-host-ui-role") {
       const inMeeting = isInMeeting();
       sendResponse({ meetCode: readMeetCode(), inMeeting, hostControlsVisible: inMeeting && hasMeetHostControls(), participantNames: inMeeting && hasMeetHostControls() ? getParticipantRoster() : [] });
+      return;
+    }
+    if (message?.type === "in-session:get-status") {
+      setPanelFocus(Boolean(message.panelFocused));
+      const inMeeting = isInMeeting();
+      sendResponse({
+        inMeeting,
+        meetCode: readMeetCode(),
+        status: inMeeting ? getCurrentStatus() : "none",
+        tracking: Boolean(inMeeting && session?.status === "running" && !isHostClient())
+      });
       return;
     }
     if (message?.type !== "in-session:retry") return;

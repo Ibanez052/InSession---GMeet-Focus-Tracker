@@ -27,6 +27,11 @@
       <section id="participant-view" class="participant-view" aria-live="polite">
         <span class="participant-mark" aria-hidden="true">✓</span>
         <h1 id="participant-heading">Connecting to your meeting…</h1>
+        <div id="participant-status" class="participant-status status-none" role="status" aria-live="polite">
+          <span class="participant-status-dot" aria-hidden="true"></span>
+          <span id="participant-status-label">Checking…</span>
+        </div>
+        <p id="participant-status-detail" class="participant-status-detail"></p>
         <p id="participant-message">Your attendance status is reported automatically while the instructor's session is running.</p>
         <form id="participant-name-form" class="participant-name-form">
           <label for="participant-name-input">Your name in this meeting</label>
@@ -100,6 +105,7 @@
                 <option value="away">Away</option>
                 <option value="left">Left</option>
                 <option value="untracked">Not reporting</option>
+                <option value="undetected">Undetected</option>
               </select>
               <button type="button" id="refresh-attendance" class="refresh-attendance-btn" aria-label="Refresh participant statuses" title="Refresh participant statuses" hidden>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8 8 0 0 0-14.9-3M4 4v4h4M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4" /></svg>

@@ -26,6 +26,7 @@ const MEET_UI = Object.freeze({
 const AWAY_DEBOUNCE_MS = 5000;
 const HEARTBEAT_MS = 30000;
 const DURATION_STALE_AFTER_MS = 60000;
+const TIMELINE_MAX_ENTRIES = 300;
 const MEET_STATE_POLL_MS = 1000;
 let meetCode = null;
 let session = null;
@@ -47,6 +48,7 @@ let rosterUpdateTimer = null;
 let durationLoadedRunId = null;
 let durationLoadPromise = null;
 let activeDurationMs = 0;
+let timeline = [];
 let awayDurationMs = 0;
 let durationStatus = null;
 let durationLastReportedAt = null;
@@ -578,6 +580,7 @@ function listenForSession() {
       durationLoadedRunId = null;
       durationLoadPromise = null;
       activeDurationMs = 0;
+      timeline = [];
       awayDurationMs = 0;
       durationStatus = null;
       durationLastReportedAt = null;
@@ -619,8 +622,38 @@ function listenForSession() {
   }, (error) => reportExtensionError("participant-session", error, "session"));
 }
 
+// The InSession side panel is part of the browser window but not part of the
+// Meet page, so focusing it makes document.hasFocus() false. While the panel
+// reports that it has focus (it re-sends this every couple of seconds), the
+// participant still counts as present in the visible Meet tab.
+let panelFocusUntil = 0;
+let panelFocusTimer = null;
+
+function panelHasFocus() {
+  return Date.now() < panelFocusUntil;
+}
+
+function setPanelFocus(focused) {
+  const before = panelHasFocus();
+  if (panelFocusTimer !== null) {
+    clearTimeout(panelFocusTimer);
+    panelFocusTimer = null;
+  }
+  if (focused) {
+    panelFocusUntil = Date.now() + 4000;
+    // If the panel stops reporting (closed, or the window lost focus), re-check.
+    panelFocusTimer = setTimeout(() => {
+      panelFocusTimer = null;
+      scheduleStatusReport(true);
+    }, 4100);
+  } else {
+    panelFocusUntil = 0;
+  }
+  if (before !== panelHasFocus()) scheduleStatusReport(true);
+}
+
 function getCurrentStatus() {
-  return !document.hidden && document.hasFocus() ? "active" : "away";
+  return !document.hidden && (document.hasFocus() || panelHasFocus()) ? "active" : "away";
 }
 
 function scheduleStatusReport(forceHeartbeat = false) {
@@ -649,6 +682,19 @@ function timestampMillis(value) {
       : Number.NaN;
 }
 
+function isTimelineEntry(entry) {
+  return Boolean(entry) && ["active", "away", "left"].includes(entry.s) && Number.isFinite(entry.t);
+}
+
+// The timeline is a list of status changes ({ s: status, t: epoch ms }). The
+// host turns consecutive entries into the Active/Away bar.
+function appendTimelineEntry(entries, status, at) {
+  if (!["active", "away", "left"].includes(status)) return entries;
+  if (entries[entries.length - 1]?.s === status) return entries;
+  const next = [...entries, { s: status, t: at }];
+  return next.length > TIMELINE_MAX_ENTRIES ? next.slice(next.length - TIMELINE_MAX_ENTRIES) : next;
+}
+
 async function ensureDurationState(now) {
   const runId = currentRunId;
   if (!runId || durationLoadedRunId === runId) return;
@@ -661,6 +707,9 @@ async function ensureDurationState(now) {
         if (previous.runId === runId) {
           activeDurationMs = Number(previous.activeDurationMs) || 0;
           awayDurationMs = Number(previous.awayDurationMs) || 0;
+          timeline = Array.isArray(previous.timeline)
+            ? previous.timeline.filter(isTimelineEntry).slice(-TIMELINE_MAX_ENTRIES)
+            : [];
           const lastSeenMs = timestampMillis(previous.lastSeen);
           const resumedAtMs = timestampMillis(session?.resumedAt) || timestampMillis(session?.startedAt);
           const since = Math.max(lastSeenMs || now, resumedAtMs || 0, now - DURATION_STALE_AFTER_MS);
@@ -709,6 +758,7 @@ async function writeStatus(forceHeartbeat = false, statusOverride = null, additi
     if (durationStatus === "active") nextActiveDurationMs += elapsedMs;
     if (durationStatus === "away") nextAwayDurationMs += elapsedMs;
   }
+  const nextTimeline = appendTimelineEntry(timeline, status, now);
   await setDoc(doc(db, "sessions", meetCode, "students", currentUid), {
     uid: currentUid,
     name: currentName || "Meet participant",
@@ -716,11 +766,13 @@ async function writeStatus(forceHeartbeat = false, statusOverride = null, additi
     runId: reportRunId,
     activeDurationMs: nextActiveDurationMs,
     awayDurationMs: nextAwayDurationMs,
+    timeline: nextTimeline,
     lastSeen: serverTimestamp(),
     ...additionalFields
   }, { merge: true });
   activeDurationMs = nextActiveDurationMs;
   awayDurationMs = nextAwayDurationMs;
+  timeline = nextTimeline;
   durationStatus = ["active", "away"].includes(status) ? status : null;
   durationLastReportedAt = durationStatus ? now : null;
   lastStatus = status;
@@ -844,6 +896,7 @@ async function submitActivityCheckIn(request) {
     durationLoadedRunId = null;
     durationLoadPromise = null;
     activeDurationMs = 0;
+    timeline = [];
     awayDurationMs = 0;
     durationStatus = null;
     durationLastReportedAt = null;
@@ -889,6 +942,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "in-session:get-host-ui-role") {
     const inMeeting = isInMeeting();
     sendResponse({ meetCode: readMeetCode(), inMeeting, hostControlsVisible: inMeeting && hasMeetHostControls(), participantNames: inMeeting && hasMeetHostControls() ? getParticipantRoster() : [] });
+    return;
+  }
+  if (message?.type === "in-session:get-status") {
+    setPanelFocus(Boolean(message.panelFocused));
+    const inMeeting = isInMeeting();
+    sendResponse({
+      inMeeting,
+      meetCode: readMeetCode(),
+      status: inMeeting ? getCurrentStatus() : "none",
+      tracking: Boolean(inMeeting && session?.status === "running" && !isHostClient())
+    });
     return;
   }
   if (message?.type !== "in-session:retry") return;
