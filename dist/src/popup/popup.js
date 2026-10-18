@@ -29645,6 +29645,10 @@ function getGoogleAccessToken() {
     });
   });
 }
+async function signOutAndClearGoogleAccount() {
+  await signOut(auth);
+  await chrome.identity.clearAllCachedAuthTokens();
+}
 function getMeetCode(url) {
   try {
     const parsed = new URL(url);
@@ -29754,7 +29758,7 @@ chrome.runtime.sendMessage({ type: "in-session:get-errors" }, (errors) => {
     "participant-session": "session",
     "participant-auth": "auth"
   }[source];
-  const retry = contentRetry ? () => retryContentAction(contentRetry) : ["session-read", "attendees-read", "host-record-cleanup"].includes(source) ? listenToMeeting : source === "google-auth" ? () => signInButton.click() : source === "sign-out" ? () => signOut(auth) : null;
+  const retry = contentRetry ? () => retryContentAction(contentRetry) : ["session-read", "attendees-read", "host-record-cleanup"].includes(source) ? listenToMeeting : source === "google-auth" ? () => signInButton.click() : source === "sign-out" ? signOutAndClearGoogleAccount : null;
   showPopupError(message, source, retry);
 });
 function toMillis(value) {
@@ -30244,15 +30248,16 @@ signInButton.addEventListener("click", async () => {
 signOutButton.addEventListener("click", async () => {
   clearPopupError();
   signOutButton.disabled = true;
-  signOutButton.textContent = "Signing out\u2026";
+  signOutButton.textContent = "Switching\u2026";
   try {
-    await signOut(auth);
+    await signOutAndClearGoogleAccount();
     clearPopupError("sign-out");
+    setParticipantNotice("Signed out", "Choose Sign in as instructor to sign in with another Google account.");
   } catch (error) {
-    showPopupError(error.message, "sign-out", () => signOut(auth));
+    showPopupError(`Could not switch accounts: ${error.message}`, "sign-out", signOutAndClearGoogleAccount);
   } finally {
     signOutButton.disabled = false;
-    signOutButton.textContent = "Sign out";
+    signOutButton.textContent = "Switch account";
   }
 });
 btnStart.addEventListener("click", async () => {

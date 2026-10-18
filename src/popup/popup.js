@@ -86,6 +86,11 @@ function getGoogleAccessToken() {
   });
 }
 
+async function signOutAndClearGoogleAccount() {
+  await signOut(auth);
+  await chrome.identity.clearAllCachedAuthTokens();
+}
+
 function getMeetCode(url) {
   try {
     const parsed = new URL(url);
@@ -207,7 +212,7 @@ chrome.runtime.sendMessage({ type: "in-session:get-errors" }, (errors) => {
   const retry = contentRetry ? () => retryContentAction(contentRetry)
     : ["session-read", "attendees-read", "host-record-cleanup"].includes(source) ? listenToMeeting
       : source === "google-auth" ? () => signInButton.click()
-        : source === "sign-out" ? () => signOut(auth)
+          : source === "sign-out" ? signOutAndClearGoogleAccount
           : null;
   showPopupError(message, source, retry);
 });
@@ -769,16 +774,17 @@ signInButton.addEventListener("click", async () => {
 signOutButton.addEventListener("click", async () => {
   clearPopupError();
   signOutButton.disabled = true;
-  signOutButton.textContent = "Signing out…";
+  signOutButton.textContent = "Switching…";
   try {
-    await signOut(auth);
+    await signOutAndClearGoogleAccount();
     clearPopupError("sign-out");
+    setParticipantNotice("Signed out", "Choose Sign in as instructor to sign in with another Google account.");
   } catch (error) {
-    showPopupError(error.message, "sign-out", () => signOut(auth));
+    showPopupError(`Could not switch accounts: ${error.message}`, "sign-out", signOutAndClearGoogleAccount);
   }
   finally {
     signOutButton.disabled = false;
-    signOutButton.textContent = "Sign out";
+    signOutButton.textContent = "Switch account";
   }
 });
 
