@@ -96,6 +96,7 @@ function getParticipantRowName(row) {
     .replace(/domain_disabled/gi, " ")
     .replace(/Visitor/gi, " ")
     .replace(/\bMore actions?\b/gi, " ")
+    .replace(/\bMore\b/gi, " ")
     .replace(/more_vert/gi, " ")
     .replace(/devices?/gi, " ")
     .replace(/\bactions?\b/gi, " ")
