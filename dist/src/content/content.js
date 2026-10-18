@@ -29355,7 +29355,7 @@ This typically indicates that your device does not have a healthy Internet conne
   function getParticipantRowName(row) {
     const accessibleText = participantRowAccessibleText(row);
     const text = [row.innerText || row.textContent || "", ...accessibleText].join("\n");
-    const lines = text.split(/\r?\n/).map((line) => line.replace(/You can't unmute someone else/gi, " ").replace(/domain_disabled/gi, " ").replace(/Visitor/gi, " ").replace(/\bMore actions?\b/gi, " ").replace(/\bMore\b/gi, " ").replace(/more_vert/gi, " ").replace(/devices?/gi, " ").replace(/\bactions?\b/gi, " ").replace(/\(\s*You\s*\)/gi, " ").replace(/\bYou\b/gi, " ").replace(/\s+/g, " ").trim()).filter((line) => isCleanName(line) && !/^meet(?:ing)? participant$/i.test(line));
+    const lines = text.split(/\r?\n/).map((line) => line.replace(/You can't unmute someone else/gi, " ").replace(/domain_disabled/gi, " ").replace(/Visitor/gi, " ").replace(/\bMore actions?\b/gi, " ").replace(/\bMore\b/gi, " ").replace(/more_vert/gi, " ").replace(/devices?/gi, " ").replace(/\bactions?\b/gi, " ").replace(/\(\s*You\s*\)/gi, " ").replace(/\bYou\b/gi, " ").replace(/\s+/g, " ").trim()).filter((line) => isCleanName(line) && !/^meet(?:ing)? participant$/i.test(line) && !/^(?:mute|unmute)\b.*\b(?:microphone|mic)\b/i.test(line));
     return lines[0] ?? "";
   }
   function normalizeParticipantName(name4) {

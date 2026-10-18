@@ -107,7 +107,11 @@ function getParticipantRowName(row) {
     .replace(/\bYou\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim())
-    .filter((line) => isCleanName(line) && !/^meet(?:ing)? participant$/i.test(line));
+    .filter((line) => isCleanName(line)
+      && !/^meet(?:ing)? participant$/i.test(line)
+      // Meet includes accessible control labels in the row, such as
+      // "Mute <name>'s microphone". They are not part of the display name.
+      && !/^(?:mute|unmute)\b.*\b(?:microphone|mic)\b/i.test(line));
   return lines[0] ?? "";
 }
 
