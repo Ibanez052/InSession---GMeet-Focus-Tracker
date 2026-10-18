@@ -28,8 +28,6 @@ const statusFilter = byId("status-filter");
 const checkInSettings = byId("check-in-settings");
 const checkInIntervalSelect = byId("check-in-interval");
 const requestCheckInButton = byId("request-check-in");
-const activityCheckIn = byId("activity-check-in");
-const confirmActivityButton = byId("confirm-activity");
 
 let user = null;
 let meetCode = null;
@@ -56,7 +54,6 @@ const authStateInitializedPromise = new Promise((resolve) => {
   resolveAuthStateInitialized = resolve;
 });
 let stalenessTimer = null;
-let checkInRefreshTimer = null;
 let selectedCheckInInterval = 0;
 let endConfirmationPending = false;
 const STALE_AFTER_MS = 60_000;
@@ -239,29 +236,6 @@ function currentCheckInRound(now = Date.now()) {
   const elapsed = now - cycleStartedAt;
   if (elapsed < interval * 60_000) return 0;
   return Math.floor(elapsed / (interval * 60_000));
-}
-
-function updateParticipantCheckIn() {
-  const round = currentCheckInRound();
-  const cycleId = sessionData?.checkInCycleId || "";
-  chrome.storage.local.get("activityCheckInAcks", ({ activityCheckInAcks }) => {
-    const activityCheckInAck = activityCheckInAcks?.[meetCode];
-    const periodicPending = Boolean(round && cycleId && user && sessionData?.hostUid !== user.uid && !(
-      activityCheckInAck?.meetCode === meetCode
-      && activityCheckInAck?.runId === sessionData.runId
-      && activityCheckInAck?.cycleId === cycleId
-      && activityCheckInAck?.round === round
-    ));
-    const instantPending = Boolean(sessionData?.status === "running" && sessionData?.checkInPromptId
-      && user && sessionData.hostUid !== user.uid
-      && !(activityCheckInAck?.meetCode === meetCode
-        && activityCheckInAck?.runId === sessionData.runId
-        && activityCheckInAck?.promptId === sessionData.checkInPromptId));
-    const pending = periodicPending || instantPending;
-    activityCheckIn.hidden = !pending;
-    confirmActivityButton.disabled = Boolean(pendingAction);
-    confirmActivityButton.textContent = pending ? "I'm here" : "Confirmed";
-  });
 }
 
 function csvCell(value) {
@@ -678,11 +652,6 @@ function stopListeners() {
   sessionData = null;
   studentsData = [];
   rosterNames = [];
-  activityCheckIn.hidden = true;
-  if (checkInRefreshTimer !== null) {
-    clearInterval(checkInRefreshTimer);
-    checkInRefreshTimer = null;
-  }
   renderUI();
 }
 
@@ -703,12 +672,6 @@ function listenToMeeting() {
     sessionData = snapshot.exists() ? snapshot.data() : null;
     void resolvePendingHostTransfer();
     updateControls();
-    updateParticipantCheckIn();
-    if (checkInRefreshTimer !== null) clearInterval(checkInRefreshTimer);
-    checkInRefreshTimer = sessionData?.status === "running" && Number(sessionData.checkInIntervalMinutes) > 0
-      ? setInterval(() => { updateParticipantCheckIn(); renderUI(); }, 5_000)
-      : null;
-
     stopStudentsListener?.();
     stopStudentsListener = null;
     studentsData = [];
@@ -900,39 +863,6 @@ requestCheckInButton.addEventListener("click", async () => {
     checkInPromptAt: serverTimestamp(),
   }), "Could not request an activity check-in");
   if (completed) setNotice("Activity check-in sent to participants.");
-});
-
-confirmActivityButton.addEventListener("click", async () => {
-  if (confirmActivityButton.disabled) return;
-  const round = currentCheckInRound();
-  const cycleId = sessionData?.checkInCycleId;
-  let checkInRequest;
-  try {
-    const { activityCheckInAcks } = await chrome.storage.local.get("activityCheckInAcks");
-    const ack = activityCheckInAcks?.[meetCode];
-    const promptId = sessionData?.checkInPromptId;
-    const promptPending = Boolean(promptId && !(ack?.meetCode === meetCode
-      && ack?.runId === sessionData?.runId && ack?.promptId === promptId));
-    checkInRequest = promptPending
-      ? { promptId, runId: sessionData?.runId }
-      : { round, cycleId, runId: sessionData?.runId };
-  } catch {
-    checkInRequest = { round, cycleId, runId: sessionData?.runId };
-  }
-  confirmActivityButton.disabled = true;
-  confirmActivityButton.textContent = "Sending…";
-  try {
-    await retryContentAction("check-in", checkInRequest);
-    clearPopupError("activity-check-in");
-    confirmActivityButton.textContent = "Confirmed";
-    activityCheckIn.hidden = true;
-    updateParticipantCheckIn();
-  } catch (error) {
-    showPopupError(`Could not confirm activity: ${error.message}`, "activity-check-in", () => retryContentAction("check-in", checkInRequest));
-  } finally {
-    confirmActivityButton.disabled = false;
-    if (!activityCheckIn.hidden) confirmActivityButton.textContent = "I'm here";
-  }
 });
 
 function useActiveTab(tab) {

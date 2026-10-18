@@ -120,17 +120,6 @@
       font-size: 14px;
       line-height: 1.55;
     }
-    .activity-check-in {
-      width: min(100%, 340px);
-      margin: 18px auto 0;
-      padding: 14px;
-      border: 1px solid #e6c46c;
-      border-radius: 10px;
-      background: #fff9e7;
-      color: #493b17;
-      text-align: left;
-    }
-    .activity-check-in .btn { width: 100%; margin-top: 12px; }
     .check-in-controls {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;

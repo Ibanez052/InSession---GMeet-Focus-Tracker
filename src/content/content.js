@@ -50,6 +50,10 @@ let lastStatus = null;
 let lastHeartbeatAt = 0;
 let awayTimer = null;
 let privacyNoticeHost = null;
+let activityCheckInHost = null;
+let activityCheckInButton = null;
+let activityCheckInError = null;
+let activityCheckInRequest = null;
 let privacyNoticeDismissalLoaded = false;
 let privacyNoticeDismissedRun = null;
 let checkInAck = null;
@@ -119,6 +123,15 @@ function currentCheckInRound(now = Date.now()) {
 }
 
 function updateCheckInBadge() {
+  const request = getPendingActivityCheckIn();
+  renderActivityCheckInPrompt(request);
+  const pending = Boolean(request);
+  try {
+    chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending }, () => { void chrome.runtime.lastError; });
+  } catch (error) { console.warn("[InSession] Could not update the activity check-in badge:", error); }
+}
+
+function getPendingActivityCheckIn() {
   const round = currentCheckInRound();
   const cycleId = session?.checkInCycleId || "";
   const isParticipant = Boolean(meetingActive && currentUid && session?.hostUid !== currentUid && session?.hostUid !== storedHostUid);
@@ -132,10 +145,78 @@ function updateCheckInBadge() {
     && !(checkInAck?.meetCode === meetCode
       && checkInAck?.runId === currentRunId
       && checkInAck?.promptId === session.checkInPromptId));
-  const pending = periodicPending || instantPending;
-  try {
-    chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending }, () => { void chrome.runtime.lastError; });
-  } catch (error) { console.warn("[InSession] Could not update the activity check-in badge:", error); }
+  if (!periodicPending && !instantPending) return null;
+  return instantPending
+    ? { promptId: session.checkInPromptId, runId: currentRunId }
+    : { round, cycleId, runId: currentRunId };
+}
+
+function removeActivityCheckInPrompt() {
+  activityCheckInHost?.remove();
+  activityCheckInHost = null;
+  activityCheckInButton = null;
+  activityCheckInError = null;
+  activityCheckInRequest = null;
+}
+
+function renderActivityCheckInPrompt(request) {
+  if (!request) {
+    removeActivityCheckInPrompt();
+    return;
+  }
+  const requestKey = request.promptId || `${request.cycleId}:${request.round}`;
+  if (!activityCheckInHost?.isConnected) {
+    activityCheckInHost = document.createElement("div");
+    activityCheckInHost.id = "insession-activity-check-in";
+    activityCheckInHost.setAttribute("aria-label", "InSession activity check-in");
+    const shadow = activityCheckInHost.attachShadow({ mode: "closed" });
+    shadow.innerHTML = `
+      <style>
+        :host { all: initial; position: fixed; z-index: 2147483647; top: 76px; left: 50%; transform: translateX(-50%); width: min(370px, calc(100vw - 24px)); color: #17324d; font: 14px/1.45 Arial, sans-serif; pointer-events: none; }
+        .card { box-sizing: border-box; padding: 16px; border: 1px solid #d7a33a; border-top: 4px solid #d28a20; border-radius: 12px; background: #fffdf5; box-shadow: 0 8px 28px #102a4340; pointer-events: auto; }
+        .eyebrow { margin-bottom: 3px; color: #805511; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+        h2 { margin: 0; color: #263844; font: 700 17px/1.3 Arial, sans-serif; }
+        p { margin: 6px 0 12px; color: #536078; }
+        button { min-height: 40px; width: 100%; border: 0; border-radius: 8px; background: #16776c; color: #fff; font: 700 14px Arial, sans-serif; cursor: pointer; }
+        button:hover:not(:disabled) { background: #0f6259; }
+        button:focus-visible { outline: 3px solid #6a9bd2; outline-offset: 2px; }
+        button:disabled { cursor: wait; opacity: .7; }
+        .error { margin: 9px 0 0; color: #a4313b; font-size: 12px; }
+        @media (prefers-reduced-motion: no-preference) { .card { animation: enter 180ms ease-out; } @keyframes enter { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } } }
+      </style>
+      <section class="card" role="alert" aria-live="assertive">
+        <div class="eyebrow">InSession activity check</div>
+        <h2>Are you here?</h2>
+        <p>Your instructor asked you to confirm your activity.</p>
+        <button type="button">I'm here</button>
+        <p class="error" role="status" hidden></p>
+      </section>`;
+    activityCheckInButton = shadow.querySelector("button");
+    activityCheckInError = shadow.querySelector(".error");
+    activityCheckInButton.addEventListener("click", async () => {
+      if (!activityCheckInRequest || activityCheckInButton.disabled) return;
+      activityCheckInButton.disabled = true;
+      activityCheckInButton.textContent = "Sending…";
+      activityCheckInError.hidden = true;
+      try {
+        await submitActivityCheckIn(activityCheckInRequest);
+      } catch (error) {
+        activityCheckInError.textContent = error.message || "Could not confirm activity. Try again.";
+        activityCheckInError.hidden = false;
+        activityCheckInButton.disabled = false;
+        activityCheckInButton.textContent = "Try again";
+        updateCheckInBadge();
+      }
+    });
+    (document.body || document.documentElement).appendChild(activityCheckInHost);
+  }
+  if (activityCheckInHost.dataset.requestKey !== requestKey) {
+    activityCheckInHost.dataset.requestKey = requestKey;
+    activityCheckInButton.disabled = false;
+    activityCheckInButton.textContent = "I'm here";
+    activityCheckInError.hidden = true;
+  }
+  activityCheckInRequest = request;
 }
 
 function reportExtensionError(source, error, retryAction = null) {
@@ -494,12 +575,75 @@ chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun"], ({ hostUid, p
   if (session?.status === "running" && session.hostUid === storedHostUid) lastStatus = null;
 });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.hostUid) return;
-  storedHostUid = changes.hostUid.newValue ?? null;
-  renderTrackingNotice();
-  updateCheckInBadge();
-  if (session?.hostUid === storedHostUid) lastStatus = null;
+  if (area !== "local") return;
+  if (changes.hostUid) {
+    storedHostUid = changes.hostUid.newValue ?? null;
+    renderTrackingNotice();
+    updateCheckInBadge();
+    if (session?.hostUid === storedHostUid) lastStatus = null;
+  }
+  if (changes.activityCheckInAcks) {
+    checkInAck = changes.activityCheckInAcks.newValue?.[meetCode] ?? null;
+    updateCheckInBadge();
+  }
 });
+
+async function submitActivityCheckIn(request) {
+  if (!meetCode || !meetingActive || !currentUid) {
+    throw new Error("Join the active Google Meet before confirming.");
+  }
+  const latestSessionSnapshot = await getDoc(doc(db, "sessions", meetCode));
+  if (!latestSessionSnapshot.exists()) {
+    throw new Error("The host's session is no longer available.");
+  }
+  const latestSession = latestSessionSnapshot.data();
+  if (latestSession.runId !== request.runId) {
+    throw new Error("That activity check has expired. Wait for the host to send a new check-in.");
+  }
+  if (latestSession.runId !== currentRunId) {
+    durationLoadedRunId = null;
+    durationLoadPromise = null;
+    activeDurationMs = 0;
+    awayDurationMs = 0;
+    durationStatus = null;
+    durationLastReportedAt = null;
+    lastStatus = null;
+    lastHeartbeatAt = 0;
+    currentRunId = latestSession.runId;
+  }
+  session = latestSession;
+  const round = currentCheckInRound();
+  const cycleId = session.checkInCycleId || "";
+  const promptId = request.promptId;
+  const instantPromptMatches = Boolean(promptId && session.status === "running" && session.checkInPromptId === promptId);
+  const periodicCheckInMatches = Boolean(!promptId && round && round === request.round && cycleId
+    && cycleId === request.cycleId);
+  if (session.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid
+    || (!instantPromptMatches && !periodicCheckInMatches)) {
+    throw new Error("That activity check has expired. Wait for the host to send a new check-in.");
+  }
+  const responseFields = instantPromptMatches
+    ? {
+        checkInPromptId: promptId,
+        ...(round && cycleId ? { checkInCycleId: cycleId, checkInRound: round } : {}),
+        checkInAt: serverTimestamp(),
+      }
+    : { checkInRound: round, checkInCycleId: cycleId, checkInAt: serverTimestamp() };
+  const ok = await reportStatus(true, lastStatus ?? getCurrentStatus(), responseFields);
+  if (!ok) throw new Error("Your activity confirmation could not be saved.");
+  const stored = await chrome.storage.local.get("activityCheckInAcks");
+  const checkInAcks = stored.activityCheckInAcks ?? {};
+  const priorAck = checkInAcks[meetCode];
+  checkInAck = {
+    ...(priorAck?.runId === currentRunId ? priorAck : {}),
+    meetCode,
+    runId: currentRunId,
+    ...(instantPromptMatches ? { promptId, ...(round && cycleId ? { cycleId, round } : {}) } : { cycleId, round }),
+  };
+  checkInAcks[meetCode] = checkInAck;
+  await chrome.storage.local.set({ activityCheckInAcks: checkInAcks });
+  updateCheckInBadge();
+}
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "in-session:get-host-ui-role") {
@@ -518,63 +662,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return;
   }
   if (message.action === "check-in") {
-    void (async () => {
-      if (!meetCode || !meetingActive || !currentUid) {
-        throw new Error("Join the active Google Meet before confirming.");
-      }
-      const latestSessionSnapshot = await getDoc(doc(db, "sessions", meetCode));
-      if (!latestSessionSnapshot.exists()) {
-        throw new Error("The host's session is no longer available.");
-      }
-      const latestSession = latestSessionSnapshot.data();
-      if (latestSession.runId !== message.runId) {
-        throw new Error("That activity check has expired. Wait for the host to send a new check-in.");
-      }
-      if (latestSession.runId !== currentRunId) {
-        durationLoadedRunId = null;
-        durationLoadPromise = null;
-        activeDurationMs = 0;
-        awayDurationMs = 0;
-        durationStatus = null;
-        durationLastReportedAt = null;
-        lastStatus = null;
-        lastHeartbeatAt = 0;
-        currentRunId = latestSession.runId;
-      }
-      session = latestSession;
-      const round = currentCheckInRound();
-      const cycleId = session.checkInCycleId || "";
-      const promptId = message.promptId;
-      const instantPromptMatches = Boolean(promptId && session.status === "running" && session.checkInPromptId === promptId);
-      const periodicCheckInMatches = Boolean(!promptId && round && round === message.round && cycleId
-        && cycleId === message.cycleId);
-      if (session.status !== "running" || session.hostUid === currentUid || session.hostUid === storedHostUid
-        || (!instantPromptMatches && !periodicCheckInMatches)) {
-        throw new Error("That activity check has expired. Wait for the host to send a new check-in.");
-      }
-      const responseFields = instantPromptMatches
-        ? {
-            checkInPromptId: promptId,
-            ...(round && cycleId ? { checkInCycleId: cycleId, checkInRound: round } : {}),
-            checkInAt: serverTimestamp(),
-          }
-        : { checkInRound: round, checkInCycleId: cycleId, checkInAt: serverTimestamp() };
-      const ok = await reportStatus(true, lastStatus ?? getCurrentStatus(), responseFields);
-      if (!ok) throw new Error("Your activity confirmation could not be saved.");
-      const stored = await chrome.storage.local.get("activityCheckInAcks");
-      const checkInAcks = stored.activityCheckInAcks ?? {};
-      const priorAck = checkInAcks[meetCode];
-      checkInAck = {
-        ...(priorAck?.runId === currentRunId ? priorAck : {}),
-        meetCode,
-        runId: currentRunId,
-        ...(instantPromptMatches ? { promptId, ...(round && cycleId ? { cycleId, round } : {}) } : { cycleId, round }),
-      };
-      checkInAcks[meetCode] = checkInAck;
-      await chrome.storage.local.set({ activityCheckInAcks: checkInAcks });
-      updateCheckInBadge();
-      sendResponse({ ok: true });
-    })().catch((error) => sendResponse({ ok: false, message: error.message }));
+    void submitActivityCheckIn(message)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, message: error.message }));
     return true;
   }
   if (message.action === "auth") {
