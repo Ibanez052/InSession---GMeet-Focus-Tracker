@@ -223,6 +223,16 @@ function normalizeParticipantName(name) {
   return String(name || "").normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+function normalizeNameForIdentityMatch(name) {
+  return String(name || "").normalize("NFKC").toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .sort()
+    .join(" ");
+}
+
 function currentCheckInRound(now = Date.now()) {
   const interval = Number(sessionData?.checkInIntervalMinutes);
   if (!Number.isFinite(interval) || interval <= 0 || sessionData?.status !== "running") return 0;
@@ -608,7 +618,10 @@ function renderUI() {
     reportedNameCounts.set(key, (reportedNameCounts.get(key) || 0) + 1);
   }
   const rosterNameCounts = new Map();
+  const signedInHostName = isGoogleAccount(user) ? normalizeNameForIdentityMatch(user.displayName) : "";
   for (const name of rosterNames) {
+    const rosterIdentity = normalizeNameForIdentityMatch(name);
+    if (signedInHostName && rosterIdentity === signedInHostName) continue;
     const key = normalizeParticipantName(name);
     const rosterSeen = (rosterNameCounts.get(key) || 0) + 1;
     rosterNameCounts.set(key, rosterSeen);

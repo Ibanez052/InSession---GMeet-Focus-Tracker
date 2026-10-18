@@ -57,21 +57,27 @@ function getParticipantRoster() {
   const ownName = normalizeParticipantName(findMyName());
   for (const row of document.querySelectorAll(MEET_UI.participantRows)) {
     if (MEET_UI.youLabel.test(row.textContent || "")) continue;
-    const textRow = row.cloneNode(true);
-    textRow.querySelectorAll('button, [role="button"]')
-      .forEach((control) => control.remove());
-    const text = (textRow.innerText || textRow.textContent || "")
-      .replace(/\bYou can't unmute someone else\b/gi, " ")
-      .replace(/\bMore actions?\b/gi, " ")
-      .replace(/\bmore_vert\b/gi, " ")
-      .replace(/\bdevices?\b/gi, " ");
-    const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
-    const name = lines[0]?.replace(/\s*\(You\)\s*/i, " ").trim();
+    const name = getParticipantRowName(row);
     if (!name || name.length > 80) continue;
     if (ownName && normalizeParticipantName(name) === ownName) continue;
     names.set(normalizeParticipantName(name), name);
   }
   return [...names.values()].sort((a, b) => a.localeCompare(b));
+}
+
+function getParticipantRowName(row) {
+  const textRow = row.cloneNode(true);
+  textRow.querySelectorAll('button, [role="button"], [aria-label], [data-tooltip], svg, [aria-hidden="true"]')
+    .forEach((control) => control.remove());
+  const text = (textRow.innerText || textRow.textContent || "")
+    .replace(/You can't unmute someone else/gi, " ")
+    .replace(/domain_disabled/gi, " ")
+    .replace(/Visitor/gi, " ")
+    .replace(/More actions?/gi, " ")
+    .replace(/more_vert/gi, " ")
+    .replace(/devices?/gi, " ");
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  return lines[0]?.replace(/\s*\(You\)\s*/i, " ").trim() ?? "";
 }
 
 function normalizeParticipantName(name) {
@@ -173,7 +179,7 @@ function findMyName() {
   if (isCleanName(self)) return self.trim();
   const you = Array.from(document.querySelectorAll(MEET_UI.participantRows))
     .find((el) => MEET_UI.youLabel.test(el.textContent ?? ""));
-  const text = you?.textContent?.replace(/\s*\(You\)/gi, "").trim();
+  const text = you ? getParticipantRowName(you) : null;
   return isCleanName(text) ? text : auth.currentUser?.displayName || null;
 }
 

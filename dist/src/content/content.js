@@ -29324,16 +29324,19 @@ This typically indicates that your device does not have a healthy Internet conne
     const ownName = normalizeParticipantName(findMyName());
     for (const row of document.querySelectorAll(MEET_UI.participantRows)) {
       if (MEET_UI.youLabel.test(row.textContent || "")) continue;
-      const textRow = row.cloneNode(true);
-      textRow.querySelectorAll('button, [role="button"]').forEach((control) => control.remove());
-      const text = (textRow.innerText || textRow.textContent || "").replace(/\bYou can't unmute someone else\b/gi, " ").replace(/\bMore actions?\b/gi, " ").replace(/\bmore_vert\b/gi, " ").replace(/\bdevices?\b/gi, " ");
-      const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
-      const name4 = lines[0]?.replace(/\s*\(You\)\s*/i, " ").trim();
+      const name4 = getParticipantRowName(row);
       if (!name4 || name4.length > 80) continue;
       if (ownName && normalizeParticipantName(name4) === ownName) continue;
       names.set(normalizeParticipantName(name4), name4);
     }
     return [...names.values()].sort((a, b2) => a.localeCompare(b2));
+  }
+  function getParticipantRowName(row) {
+    const textRow = row.cloneNode(true);
+    textRow.querySelectorAll('button, [role="button"], [aria-label], [data-tooltip], svg, [aria-hidden="true"]').forEach((control) => control.remove());
+    const text = (textRow.innerText || textRow.textContent || "").replace(/You can't unmute someone else/gi, " ").replace(/domain_disabled/gi, " ").replace(/Visitor/gi, " ").replace(/More actions?/gi, " ").replace(/more_vert/gi, " ").replace(/devices?/gi, " ");
+    const lines = text.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+    return lines[0]?.replace(/\s*\(You\)\s*/i, " ").trim() ?? "";
   }
   function normalizeParticipantName(name4) {
     return String(name4 || "").normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
@@ -29421,7 +29424,7 @@ This typically indicates that your device does not have a healthy Internet conne
     const self2 = document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name");
     if (isCleanName(self2)) return self2.trim();
     const you = Array.from(document.querySelectorAll(MEET_UI.participantRows)).find((el) => MEET_UI.youLabel.test(el.textContent ?? ""));
-    const text = you?.textContent?.replace(/\s*\(You\)/gi, "").trim();
+    const text = you ? getParticipantRowName(you) : null;
     return isCleanName(text) ? text : auth.currentUser?.displayName || null;
   }
   function removeTrackingNotice() {
