@@ -29498,7 +29498,10 @@ This typically indicates that your device does not have a healthy Internet conne
   function isInMeeting() {
     if (!meetCode) return false;
     const language = (document.documentElement.lang || navigator.language || "en").toLowerCase().split("-")[0];
-    const labels = MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en;
+    const labels = [
+      ...MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en,
+      ...Object.entries(MEET_UI.leaveLabels).filter(([locale]) => locale !== language).flatMap(([, patterns]) => patterns)
+    ];
     const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
       const labelsOnControl = ["aria-label", "title", "data-tooltip"].map((attribute) => control.getAttribute(attribute)?.trim() ?? "").filter(Boolean);
       return labelsOnControl.some((rawLabel) => {

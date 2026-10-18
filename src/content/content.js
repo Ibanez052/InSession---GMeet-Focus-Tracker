@@ -264,7 +264,15 @@ function readMeetCode() {
 function isInMeeting() {
   if (!meetCode) return false;
   const language = (document.documentElement.lang || navigator.language || "en").toLowerCase().split("-")[0];
-  const labels = MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en;
+  // The browser locale and Meet's own UI locale can differ. Check the selected
+  // locale first, then every known Meet translation so this shared gate does
+  // not silently disable status reporting and activity check-ins.
+  const labels = [
+    ...(MEET_UI.leaveLabels[language] ?? MEET_UI.leaveLabels.en),
+    ...Object.entries(MEET_UI.leaveLabels)
+      .filter(([locale]) => locale !== language)
+      .flatMap(([, patterns]) => patterns)
+  ];
   const leaveControl = Array.from(document.querySelectorAll(MEET_UI.leaveControls)).find((control) => {
     const labelsOnControl = ["aria-label", "title", "data-tooltip"]
       .map((attribute) => control.getAttribute(attribute)?.trim() ?? "")
