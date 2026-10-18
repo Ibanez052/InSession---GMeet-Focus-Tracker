@@ -149,6 +149,8 @@ All fixes below fit one redesign:
 
 - [x] **23. Clients can be spoofed or disabled.** Firestore rules require participant writes to use that participant's authenticated UID. Missing or stale heartbeats display as **Not reporting**, rather than Active or Away. Instructor-selected check-ins show whether a participant clicked to confirm; they cannot prove attention or prevent disabling/modifying the extension.
 
+- [x] **25. Switch the instructor account during a meeting.** **Switch account** opens a two-minute handoff for the current session. The next Google account can take ownership after the extension detects Meet host controls. Deploy the updated `firestore.rules` for this to work. Meet's host-control signal is client-side and cannot be verified by Firestore, so only use the handoff when you intend to transfer control.
+
 ## E. Features and UX
 
 - [x] **24. Silent failures.** Firebase session/attendee listener errors, participant authentication and status-write failures, host actions, and cleanup errors are logged and shown in the side panel. Recoverable connection and action errors have a retry control, and the extension action shows a red `!` badge until its reported error source succeeds or is retried.

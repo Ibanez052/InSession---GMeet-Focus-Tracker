@@ -12,14 +12,25 @@ service cloud.firestore {
       return googleSignedIn() && sessionExists(code)
         && get(/databases/$(database)/documents/sessions/$(code)).data.hostUid == request.auth.uid;
     }
+    function canClaimHostTransfer() {
+      return googleSignedIn()
+        && resource.data.hostTransferPending == true
+        && resource.data.hostTransferExpiresAt is timestamp
+        && request.time < resource.data.hostTransferExpiresAt
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.hostTransferPending == false
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['hostUid', 'hostTransferPending']);
+    }
 
     match /sessions/{code} {
       allow read: if signedIn();
       allow create: if googleSignedIn()
         && request.resource.data.hostUid == request.auth.uid
         && request.resource.data.status in ['running', 'paused', 'ended'];
-      allow update: if isHost(code)
-        && request.resource.data.hostUid == resource.data.hostUid;
+      allow update: if (isHost(code)
+          && request.resource.data.hostUid == resource.data.hostUid)
+        || canClaimHostTransfer();
       allow delete: if isHost(code);
 
       match /students/{uid} {

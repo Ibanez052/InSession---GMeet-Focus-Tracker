@@ -1,5 +1,5 @@
 import { GoogleAuthProvider, linkWithCredential, onAuthStateChanged, signInAnonymously, signInWithCredential, signOut } from "firebase/auth/web-extension";
-import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc, writeBatch } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc, Timestamp, updateDoc, writeBatch } from "firebase/firestore";
 import { auth, db } from "../shared/firebase.js";
 
 const byId = (id) => document.getElementById(id);
@@ -51,6 +51,7 @@ let stopStudentsListener = null;
 let pendingAction = null;
 let pendingActionLabel = "";
 let anonymousAuthPromise = null;
+let hostTransferPromise = null;
 let authStateInitialized = false;
 let resolveAuthStateInitialized;
 const authStateInitializedPromise = new Promise((resolve) => {
@@ -479,9 +480,9 @@ function updateControls() {
     checkInIntervalSelect.disabled = sessionData?.status === "ended" || Boolean(pendingAction);
   }
   refreshHostDetectionButton.hidden = !meetCode || hostControlsVisible
-    || Boolean(sessionData?.hostUid && user?.uid && sessionData.hostUid !== user.uid);
+    || Boolean(sessionData?.hostUid && user?.uid && sessionData.hostUid !== user.uid && !sessionData?.hostTransferPending);
   signInButton.hidden = !hostControlsVisible || isGoogleUser
-    || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid);
+    || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid && !sessionData?.hostTransferPending);
   signInButton.textContent = user?.isAnonymous ? "Sign in as instructor" : "Instructor sign-in";
   signOutButton.hidden = !isGoogleUser || isPreviewingCheckIn;
 
@@ -520,7 +521,9 @@ function updateControls() {
   accountStatus.textContent = isGoogleUser ? "Participant mode" : user ? "Participant mode" : "Not signed in";
   if (!user) {
     setParticipantNotice(hostControlsVisible ? "Instructor sign-in" : "Participant mode",
-      hostControlsVisible
+      sessionData?.hostTransferPending && hostControlsVisible
+        ? "The instructor opened a short handoff. Sign in with the Google account that should manage this meeting."
+        : hostControlsVisible
         ? "Meet host controls are available in this call. Sign in with Google to manage the session."
         : "Your attendance is tracked automatically when the instructor starts a session.");
     return;
@@ -704,6 +707,7 @@ function listenToMeeting() {
   stopSessionListener = onSnapshot(sessionRef, (snapshot) => {
     clearPopupError("session-read");
     sessionData = snapshot.exists() ? snapshot.data() : null;
+    void resolvePendingHostTransfer();
     updateControls();
     updateParticipantCheckIn();
     if (checkInRefreshTimer !== null) clearInterval(checkInRefreshTimer);
@@ -738,6 +742,26 @@ function listenToMeeting() {
     }
     renderUI();
   }, (error) => showSessionError(`Could not read meeting session: ${error.message}`));
+}
+
+async function resolvePendingHostTransfer() {
+  if (hostTransferPromise || !sessionData?.hostTransferPending || !isGoogleAccount(user) || !meetCode) return;
+  const sessionRef = doc(db, "sessions", meetCode);
+  const targetUid = user.uid;
+  const currentHostUid = sessionData.hostUid;
+
+  hostTransferPromise = (async () => {
+    if (targetUid === currentHostUid) return;
+    const expiresAt = toMillis(sessionData.hostTransferExpiresAt);
+    if (!hostControlsVisible || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+    await updateDoc(sessionRef, { hostUid: targetUid, hostTransferPending: false });
+  })()
+    .then(() => clearPopupError("host-transfer"))
+    .catch((error) => {
+      showPopupError(`Could not transfer the session to this account: ${error.message}`, "host-transfer", resolvePendingHostTransfer);
+    })
+    .finally(() => { hostTransferPromise = null; });
+  return hostTransferPromise;
 }
 
 signInButton.addEventListener("click", async () => {
@@ -776,9 +800,17 @@ signOutButton.addEventListener("click", async () => {
   signOutButton.disabled = true;
   signOutButton.textContent = "Switching…";
   try {
+    if (isGoogleAccount(user) && sessionData?.hostUid === user.uid && meetCode) {
+      const expiresAt = Timestamp.fromMillis(Date.now() + 2 * 60 * 1000);
+      await updateDoc(doc(db, "sessions", meetCode), {
+        hostTransferPending: true,
+        hostTransferExpiresAt: expiresAt,
+      });
+      sessionData = { ...sessionData, hostTransferPending: true, hostTransferExpiresAt: expiresAt };
+    }
     await signOutAndClearGoogleAccount();
     clearPopupError("sign-out");
-    setParticipantNotice("Signed out", "Choose Sign in as instructor to sign in with another Google account.");
+    setParticipantNotice("Signed out", "Choose Sign in as instructor to use another Google account for this meeting.");
   } catch (error) {
     showPopupError(`Could not switch accounts: ${error.message}`, "sign-out", signOutAndClearGoogleAccount);
   }
@@ -937,6 +969,7 @@ async function refreshHostUiRole(tabId, { retry = false, showResult = false } = 
   if (hostDetectionRequestId !== requestId) return;
   hostControlsVisible = Boolean(result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode);
   rosterNames = hostControlsVisible && Array.isArray(result?.participantNames) ? result.participantNames : [];
+  void resolvePendingHostTransfer();
   updateControls();
   renderUI();
   if (showResult && !hostControlsVisible) {

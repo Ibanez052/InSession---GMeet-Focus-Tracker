@@ -29615,6 +29615,7 @@ var stopStudentsListener = null;
 var pendingAction = null;
 var pendingActionLabel = "";
 var anonymousAuthPromise = null;
+var hostTransferPromise = null;
 var authStateInitialized = false;
 var resolveAuthStateInitialized;
 var authStateInitializedPromise = new Promise((resolve) => {
@@ -29982,8 +29983,8 @@ function updateControls() {
     selectedCheckInInterval = Number(checkInIntervalSelect.value) || 0;
     checkInIntervalSelect.disabled = sessionData?.status === "ended" || Boolean(pendingAction);
   }
-  refreshHostDetectionButton.hidden = !meetCode || hostControlsVisible || Boolean(sessionData?.hostUid && user?.uid && sessionData.hostUid !== user.uid);
-  signInButton.hidden = !hostControlsVisible || isGoogleUser || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid);
+  refreshHostDetectionButton.hidden = !meetCode || hostControlsVisible || Boolean(sessionData?.hostUid && user?.uid && sessionData.hostUid !== user.uid && !sessionData?.hostTransferPending);
+  signInButton.hidden = !hostControlsVisible || isGoogleUser || Boolean(user && sessionData?.hostUid && sessionData.hostUid !== user.uid && !sessionData?.hostTransferPending);
   signInButton.textContent = user?.isAnonymous ? "Sign in as instructor" : "Instructor sign-in";
   signOutButton.hidden = !isGoogleUser || isPreviewingCheckIn;
   if (isPreviewingCheckIn) {
@@ -30016,7 +30017,7 @@ function updateControls() {
   if (!user) {
     setParticipantNotice(
       hostControlsVisible ? "Instructor sign-in" : "Participant mode",
-      hostControlsVisible ? "Meet host controls are available in this call. Sign in with Google to manage the session." : "Your attendance is tracked automatically when the instructor starts a session."
+      sessionData?.hostTransferPending && hostControlsVisible ? "The instructor opened a short handoff. Sign in with the Google account that should manage this meeting." : hostControlsVisible ? "Meet host controls are available in this call. Sign in with Google to manage the session." : "Your attendance is tracked automatically when the instructor starts a session."
     );
     return;
   }
@@ -30185,6 +30186,7 @@ function listenToMeeting() {
   stopSessionListener = onSnapshot(sessionRef, (snapshot) => {
     clearPopupError("session-read");
     sessionData = snapshot.exists() ? snapshot.data() : null;
+    void resolvePendingHostTransfer();
     updateControls();
     updateParticipantCheckIn();
     if (checkInRefreshTimer !== null) clearInterval(checkInRefreshTimer);
@@ -30214,6 +30216,23 @@ function listenToMeeting() {
     }
     renderUI();
   }, (error) => showSessionError(`Could not read meeting session: ${error.message}`));
+}
+async function resolvePendingHostTransfer() {
+  if (hostTransferPromise || !sessionData?.hostTransferPending || !isGoogleAccount(user) || !meetCode) return;
+  const sessionRef = doc(db, "sessions", meetCode);
+  const targetUid = user.uid;
+  const currentHostUid = sessionData.hostUid;
+  hostTransferPromise = (async () => {
+    if (targetUid === currentHostUid) return;
+    const expiresAt = toMillis(sessionData.hostTransferExpiresAt);
+    if (!hostControlsVisible || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+    await updateDoc(sessionRef, { hostUid: targetUid, hostTransferPending: false });
+  })().then(() => clearPopupError("host-transfer")).catch((error) => {
+    showPopupError(`Could not transfer the session to this account: ${error.message}`, "host-transfer", resolvePendingHostTransfer);
+  }).finally(() => {
+    hostTransferPromise = null;
+  });
+  return hostTransferPromise;
 }
 signInButton.addEventListener("click", async () => {
   clearPopupError();
@@ -30250,9 +30269,17 @@ signOutButton.addEventListener("click", async () => {
   signOutButton.disabled = true;
   signOutButton.textContent = "Switching\u2026";
   try {
+    if (isGoogleAccount(user) && sessionData?.hostUid === user.uid && meetCode) {
+      const expiresAt = Timestamp.fromMillis(Date.now() + 2 * 60 * 1e3);
+      await updateDoc(doc(db, "sessions", meetCode), {
+        hostTransferPending: true,
+        hostTransferExpiresAt: expiresAt
+      });
+      sessionData = { ...sessionData, hostTransferPending: true, hostTransferExpiresAt: expiresAt };
+    }
     await signOutAndClearGoogleAccount();
     clearPopupError("sign-out");
-    setParticipantNotice("Signed out", "Choose Sign in as instructor to sign in with another Google account.");
+    setParticipantNotice("Signed out", "Choose Sign in as instructor to use another Google account for this meeting.");
   } catch (error) {
     showPopupError(`Could not switch accounts: ${error.message}`, "sign-out", signOutAndClearGoogleAccount);
   } finally {
@@ -30406,6 +30433,7 @@ async function refreshHostUiRole(tabId, { retry = false, showResult = false } = 
   if (hostDetectionRequestId !== requestId) return;
   hostControlsVisible = Boolean(result?.inMeeting && result?.hostControlsVisible && result?.meetCode === meetCode);
   rosterNames = hostControlsVisible && Array.isArray(result?.participantNames) ? result.participantNames : [];
+  void resolvePendingHostTransfer();
   updateControls();
   renderUI();
   if (showResult && !hostControlsVisible) {
