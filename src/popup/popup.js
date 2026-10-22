@@ -345,6 +345,21 @@ function createAttendanceCsv(session, participantDocs, endedAtMs, availableRoste
       session.meetCode, startedAt, endedAt];
   });
   rows.push(...participants);
+  // People listed in Meet's roster who never reported (no extension, or on a phone).
+  const reportedNameCounts = new Map();
+  for (const student of participantData) {
+    const key = normalizeParticipantName(student.name);
+    reportedNameCounts.set(key, (reportedNameCounts.get(key) || 0) + 1);
+  }
+  const rosterSeenCounts = new Map();
+  for (const name of availableRosterNames) {
+    const key = normalizeParticipantName(name);
+    const seen = (rosterSeenCounts.get(key) || 0) + 1;
+    rosterSeenCounts.set(key, seen);
+    if (seen > (reportedNameCounts.get(key) || 0)) {
+      rows.push([name, "Undetected", "", "", "", session.meetCode, startedAt, endedAt]);
+    }
+  }
   return `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
 }
 
@@ -622,6 +637,109 @@ async function retryPopupError() {
 retrySessionErrorButton.addEventListener("click", retryPopupError);
 retryParticipantErrorButton.addEventListener("click", retryPopupError);
 
+let expandedStudentId = null;
+
+function formatShortDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+  if (hours) parts.push(`${hours} hr`);
+  if (minutes) parts.push(`${minutes} min`);
+  if (seconds || !parts.length) parts.push(`${seconds} sec`);
+  return parts.join(" ");
+}
+
+// Turns the participant's status-change log into contiguous Active/Away
+// segments. The last segment runs to "now" while the participant is live, and
+// otherwise to the last time the host heard from them.
+function buildTimelineSegments(student, now = Date.now()) {
+  const entries = (Array.isArray(student.timeline) ? student.timeline : [])
+    .filter((entry) => entry && ["active", "away", "left"].includes(entry.s) && Number.isFinite(entry.t))
+    .sort((a, b) => a.t - b.t);
+  if (!entries.length) return { segments: [], start: 0, end: 0 };
+  const lastSeenMs = getLastSeenMillis(student);
+  const live = sessionData?.status === "running" && student.status !== "left"
+    && Number.isFinite(lastSeenMs) && now - lastSeenMs <= STALE_AFTER_MS;
+  const lastEntryAt = entries[entries.length - 1].t;
+  const end = Math.max(live ? now : (Number.isFinite(lastSeenMs) ? lastSeenMs : lastEntryAt), lastEntryAt);
+  const segments = [];
+  entries.forEach((entry, index) => {
+    if (entry.s === "left") return;
+    const segmentEnd = entries[index + 1]?.t ?? end;
+    if (segmentEnd > entry.t) segments.push({ status: entry.s, start: entry.t, end: segmentEnd });
+  });
+  return { segments, start: entries[0].t, end };
+}
+
+function renderTimelineRow(student) {
+  const row = document.createElement("tr");
+  row.className = "timeline-row";
+  const cell = document.createElement("td");
+  cell.colSpan = 2;
+  const { segments, start, end } = buildTimelineSegments(student);
+  if (!segments.length) {
+    cell.className = "timeline-empty";
+    cell.textContent = "No activity history recorded for this participant yet.";
+    row.appendChild(cell);
+    return row;
+  }
+  const totalMs = segments.reduce((sum, segment) => sum + (segment.end - segment.start), 0);
+  const totals = { active: 0, away: 0 };
+  for (const segment of segments) totals[segment.status] += segment.end - segment.start;
+
+  const bar = document.createElement("div");
+  bar.className = "timeline-bar";
+  bar.setAttribute("role", "img");
+  bar.setAttribute("aria-label", segments
+    .map((segment) => `${segment.status === "active" ? "Active" : "Away"} ${formatShortDuration(segment.end - segment.start)}`)
+    .join(", "));
+  const labels = document.createElement("div");
+  labels.className = "timeline-labels";
+  for (const segment of segments) {
+    const duration = segment.end - segment.start;
+    const name = segment.status === "active" ? "Active" : "Away";
+    const piece = document.createElement("div");
+    piece.className = `timeline-seg seg-${segment.status}`;
+    piece.style.flexGrow = String(duration);
+    piece.title = `${name}: ${formatShortDuration(duration)} (${new Date(segment.start).toLocaleTimeString()} – ${new Date(segment.end).toLocaleTimeString()})`;
+    bar.appendChild(piece);
+
+    const label = document.createElement("div");
+    label.className = "timeline-label";
+    label.style.flexGrow = String(duration);
+    // Segments too narrow for text keep their slot and show it as a tooltip.
+    if (duration / totalMs >= 0.12) {
+      const nameEl = document.createElement("span");
+      nameEl.className = "timeline-label-name";
+      nameEl.textContent = name;
+      const timeEl = document.createElement("span");
+      timeEl.className = "timeline-label-time";
+      timeEl.textContent = formatShortDuration(duration);
+      label.append(nameEl, timeEl);
+    } else {
+      label.title = piece.title;
+    }
+    labels.appendChild(label);
+  }
+
+  const axis = document.createElement("div");
+  axis.className = "timeline-axis";
+  const startEl = document.createElement("span");
+  startEl.textContent = new Date(start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const endEl = document.createElement("span");
+  endEl.textContent = new Date(end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  axis.append(startEl, endEl);
+
+  const summary = document.createElement("div");
+  summary.className = "timeline-summary";
+  summary.textContent = `Active ${formatShortDuration(totals.active)} · Away ${formatShortDuration(totals.away)}`;
+  cell.append(bar, labels, axis, summary);
+  row.appendChild(cell);
+  return row;
+}
+
 function renderUI() {
   scheduleStalenessRefresh();
   const signedInHostName = isGoogleAccount(user) ? normalizeNameForIdentityMatch(user.displayName) : "";
@@ -642,7 +760,7 @@ function renderUI() {
     const rosterSeen = (rosterNameCounts.get(key) || 0) + 1;
     rosterNameCounts.set(key, rosterSeen);
     if (rosterSeen > (reportedNameCounts.get(key) || 0)) {
-      students.push({ name, displayStatus: "untracked", fromRoster: true });
+      students.push({ name, displayStatus: sessionData?.status === "running" ? "undetected" : "untracked", fromRoster: true });
     }
   }
   const total = students.length;
@@ -670,6 +788,22 @@ function renderUI() {
 
   for (const student of filtered) {
     const row = document.createElement("tr");
+    const expandable = !student.fromRoster && Boolean(student.id);
+    if (expandable) {
+      const expanded = expandedStudentId === student.id;
+      row.className = "student-row";
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-expanded", String(expanded));
+      const toggle = () => {
+        expandedStudentId = expandedStudentId === student.id ? null : student.id;
+        renderUI();
+      };
+      row.addEventListener("click", toggle);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
+      });
+    }
     const nameCell = document.createElement("td");
     nameCell.className = "col-student";
     nameCell.textContent = student.name || "Unknown";
@@ -678,12 +812,14 @@ function renderUI() {
     const badge = document.createElement("span");
     const status = student.displayStatus;
     badge.className = `status-badge badge-${status}`;
+    if (status === "undetected") badge.title = "In the Meet call but not reporting to InSession: no extension installed, or joined from a phone.";
     const dot = document.createElement("span");
     dot.className = "badge-dot";
     const statusLabel = status === "active" ? "Active"
       : status === "away" ? "Away"
         : status === "left" ? "Left"
-          : "Not reporting";
+          : status === "undetected" ? "Undetected"
+            : "Not reporting";
     badge.append(dot, document.createTextNode(statusLabel));
     statusCell.appendChild(badge);
     const checkInRound = currentCheckInRound();
@@ -697,6 +833,7 @@ function renderUI() {
     }
     row.append(nameCell, statusCell);
     studentTableBody.appendChild(row);
+    if (expandable && expandedStudentId === student.id) studentTableBody.appendChild(renderTimelineRow(student));
   }
 }
 
@@ -1044,3 +1181,79 @@ onAuthStateChanged(auth, (signedInUser) => {
   listenToMeeting();
   updateControls();
 });
+
+// Participants confirm the name the host should see. The Meet tab's content
+// script picks the saved value up from chrome.storage and re-reports.
+const participantNameForm = byId("participant-name-form");
+const participantNameInput = byId("participant-name-input");
+const participantNameStatus = byId("participant-name-status");
+chrome.storage.local.get("selfDisplayName", ({ selfDisplayName }) => {
+  if (selfDisplayName && !participantNameInput.value) participantNameInput.value = selfDisplayName;
+});
+participantNameForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = participantNameInput.value.replace(/\s+/g, " ").trim();
+  if (name.length < 2 || /^(?:you|meet participant)$/i.test(name)) {
+    participantNameStatus.textContent = "Enter the name shown for you in the meeting.";
+    participantNameStatus.hidden = false;
+    return;
+  }
+  chrome.storage.local.set({ selfDisplayName: name }, () => {
+    participantNameStatus.textContent = "Saved. The host will now see this name.";
+    participantNameStatus.hidden = false;
+  });
+});
+
+// ---- Participant status (Active / Away / Not in a meeting) ----
+const participantStatusEl = byId("participant-status");
+const participantStatusLabel = byId("participant-status-label");
+const participantStatusDetail = byId("participant-status-detail");
+let participantStatusRequestId = 0;
+
+function queryTabs(query) {
+  return new Promise((resolve) => chrome.tabs.query(query, (tabs) => resolve(chrome.runtime.lastError ? [] : tabs || [])));
+}
+
+function requestMeetStatus(tabId, panelFocused) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, { type: "in-session:get-status", panelFocused }, (result) => {
+        resolve(chrome.runtime.lastError ? null : result);
+      });
+    } catch { resolve(null); }
+  });
+}
+
+function renderParticipantStatus(current) {
+  const state = current?.status === "active" || current?.status === "away" ? current.status : "none";
+  participantStatusEl.className = `participant-status status-${state}`;
+  participantStatusLabel.textContent = state === "active" ? "Active" : state === "away" ? "Away" : "Not in a meeting";
+  participantStatusDetail.textContent = state === "none"
+    ? "Join a Google Meet call to start. Your status appears here once you are in the meeting."
+    : state === "away"
+      ? "Your Meet tab is in the background. Return to it to show as Active."
+      : "You are viewing your Meet tab.";
+  if (state !== "none" && current?.tracking) {
+    participantStatusDetail.textContent += " Your status is being shared with the host.";
+  } else if (state !== "none") {
+    participantStatusDetail.textContent += " The host has not started tracking yet.";
+  }
+}
+
+async function refreshParticipantStatus() {
+  if (participantView.hidden) return;
+  const requestId = ++participantStatusRequestId;
+  // The panel's own focus counts as presence in the Meet tab it sits beside.
+  const [activeTab] = await queryTabs({ active: true, currentWindow: true });
+  const panelFocused = document.hasFocus();
+  const meetTabs = await queryTabs({ url: "https://meet.google.com/*" });
+  const results = await Promise.all(meetTabs.map((tab) => requestMeetStatus(tab.id, panelFocused && tab.id === activeTab?.id)));
+  if (requestId !== participantStatusRequestId) return;
+  const inMeeting = results.filter((result) => result?.inMeeting);
+  renderParticipantStatus(inMeeting.find((result) => result.status === "active") ?? inMeeting[0] ?? null);
+}
+
+refreshParticipantStatus();
+setInterval(refreshParticipantStatus, 2000);
+window.addEventListener("focus", refreshParticipantStatus);
+window.addEventListener("blur", refreshParticipantStatus);

@@ -29290,12 +29290,14 @@ This typically indicates that your device does not have a healthy Internet conne
     hostControlLabel: /\b(?:host controls?|meeting controls?|host management|meeting safety)\b/i,
     googleAccount: '[aria-label*="Google Account:" i]',
     selfName: "[data-self-name]",
+    guestNameInput: 'input[aria-label="Your name" i], input[placeholder="Your name" i], input[autocomplete="name"]',
     participantRows: '[role="listitem"]',
     youLabel: /(?:\(\s*You\s*\)|(?:^|[\s,])You(?:$|[\s,]))/i
   });
   var AWAY_DEBOUNCE_MS = 5e3;
   var HEARTBEAT_MS = 3e4;
   var DURATION_STALE_AFTER_MS = 6e4;
+  var TIMELINE_MAX_ENTRIES = 300;
   var MEET_STATE_POLL_MS = 1e3;
   var meetCode = null;
   var session = null;
@@ -29317,11 +29319,13 @@ This typically indicates that your device does not have a healthy Internet conne
   var durationLoadedRunId = null;
   var durationLoadPromise = null;
   var activeDurationMs = 0;
+  var timeline = [];
   var awayDurationMs = 0;
   var durationStatus = null;
   var durationLastReportedAt = null;
   var statusWriteQueue = Promise.resolve();
   var lastStatus = null;
+  var lastReportedName = null;
   var lastHeartbeatAt = 0;
   var awayTimer = null;
   var privacyNoticeHost = null;
@@ -29332,6 +29336,33 @@ This typically indicates that your device does not have a healthy Internet conne
   var privacyNoticeDismissalLoaded = false;
   var privacyNoticeDismissedRun = null;
   var checkInAck = null;
+  function extensionAlive() {
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  }
+  var staleShutdownDone = false;
+  function shutDownIfStale() {
+    if (extensionAlive()) return false;
+    if (staleShutdownDone) return true;
+    staleShutdownDone = true;
+    meetingActive = false;
+    for (const timer of [heartbeatTimer, checkInTimer]) if (timer !== null) clearInterval(timer);
+    for (const timer of [awayTimer, meetingContextTimer, leaveConfirmationTimer, rosterUpdateTimer]) if (timer !== null) clearTimeout(timer);
+    heartbeatTimer = checkInTimer = awayTimer = meetingContextTimer = leaveConfirmationTimer = rosterUpdateTimer = null;
+    clearInterval(statePollTimer);
+    routeObserver.disconnect();
+    try {
+      stopSessionListener?.();
+    } catch {
+    }
+    removeActivityCheckInPrompt();
+    removeTrackingNotice();
+    removeNamePrompt();
+    return true;
+  }
   function getParticipantRoster() {
     const names = /* @__PURE__ */ new Map();
     const ownName = normalizeParticipantName(findMyName());
@@ -29524,16 +29555,105 @@ This typically indicates that your device does not have a healthy Internet conne
     const name4 = value?.trim();
     return Boolean(name4 && name4.length >= 2 && name4.length <= 80);
   }
-  function findMyName() {
-    const self2 = document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name");
-    if (isCleanName(self2)) return self2.trim();
+  var SELF_LABEL = /^(?:you|your|me|meet participant|presenting)$/i;
+  var cachedSelfName = null;
+  function cleanSelfName(value) {
+    const name4 = String(value ?? "").replace(/\(\s*You\s*\)/gi, " ").replace(/\s+/g, " ").trim();
+    return isCleanName(name4) && !SELF_LABEL.test(name4) ? name4 : null;
+  }
+  function detectSelfName() {
+    const selfAttr = cleanSelfName(document.querySelector(MEET_UI.selfName)?.getAttribute("data-self-name"));
+    if (selfAttr) return selfAttr;
     const you = Array.from(document.querySelectorAll(MEET_UI.participantRows)).find(isSelfParticipantRow);
-    const text = you ? getParticipantRowName(you) : null;
-    if (isCleanName(text)) return text;
-    const account = document.querySelector(MEET_UI.googleAccount)?.getAttribute("aria-label") ?? "";
-    const accountMatch = account.match(/Google Account:\s*([^,(]+)/i);
-    if (isCleanName(accountMatch?.[1])) return accountMatch[1].trim();
-    return auth.currentUser?.displayName || null;
+    const rowName = cleanSelfName(you ? getParticipantRowName(you) : null);
+    if (rowName) return rowName;
+    for (const element of document.querySelectorAll(MEET_UI.googleAccount)) {
+      const match = (element.getAttribute("aria-label") ?? "").match(/Google Account:\s*([^,(\r\n]+)/i);
+      const accountName = cleanSelfName(match?.[1]);
+      if (accountName) return accountName;
+    }
+    for (const input of document.querySelectorAll(MEET_UI.guestNameInput)) {
+      const typed = cleanSelfName(input.value);
+      if (typed) return typed;
+    }
+    return null;
+  }
+  function rememberSelfName() {
+    const name4 = detectSelfName();
+    if (name4 && name4 !== cachedSelfName) {
+      cachedSelfName = name4;
+      return true;
+    }
+    return false;
+  }
+  var namePromptHost = null;
+  var namePromptMode = null;
+  var nameConfirmedForPage = false;
+  var manualSelfName = null;
+  function removeNamePrompt() {
+    namePromptHost?.remove();
+    namePromptHost = null;
+    namePromptMode = null;
+  }
+  function desiredNamePromptMode() {
+    if (!meetCode) return null;
+    if (!meetingActive) return nameConfirmedForPage ? null : "prejoin";
+    if (currentUid && session?.status === "running" && !isHostClient() && !findMyName()) return "incall";
+    return null;
+  }
+  function saveManualName(value) {
+    const name4 = cleanSelfName(value);
+    if (!name4) return false;
+    manualSelfName = name4;
+    nameConfirmedForPage = true;
+    try {
+      chrome.storage.local.set({ selfDisplayName: name4 });
+    } catch {
+    }
+    removeNamePrompt();
+    if (meetingActive) scheduleStatusReport(true);
+    return true;
+  }
+  function updateNamePrompt() {
+    const mode = desiredNamePromptMode();
+    if (!mode) {
+      removeNamePrompt();
+      return;
+    }
+    if (namePromptHost?.isConnected && namePromptMode === mode) return;
+    removeNamePrompt();
+    namePromptMode = mode;
+    const prejoin = mode === "prejoin";
+    namePromptHost = document.createElement("div");
+    namePromptHost.id = "insession-name-prompt";
+    const shadow = namePromptHost.attachShadow({ mode: "closed" });
+    shadow.innerHTML = `
+    <style>
+      :host { all: initial; position: fixed; z-index: 2147483647; top: 64px; left: 50%; transform: translateX(-50%); width: min(400px, calc(100vw - 24px)); font: 13px/1.45 Arial, sans-serif; color: #17324d; }
+      .card { box-sizing: border-box; padding: 12px 14px; border: 1px solid #cbd9e5; border-top: 4px solid #16776c; border-radius: 10px; background: #fff; box-shadow: 0 3px 14px #102a4330; }
+      strong { display: block; margin-bottom: 2px; }
+      form { display: flex; gap: 8px; margin-top: 8px; }
+      input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid #9fb3c4; border-radius: 6px; font: 14px Arial, sans-serif; color: #17324d; background: #fff; }
+      button { padding: 0 14px; border: 0; border-radius: 6px; background: #16776c; color: #fff; font: 700 13px Arial, sans-serif; cursor: pointer; }
+    </style>
+    <section class="card" role="dialog" aria-label="InSession name">
+      <strong></strong>
+      <span class="hint"></span>
+      <form><input type="text" maxlength="80" placeholder="Your name" aria-label="Your name" /><button type="submit">Save</button></form>
+    </section>`;
+    shadow.querySelector("strong").textContent = prejoin ? "Enter your name for InSession" : "InSession could not read your Meet name";
+    shadow.querySelector(".hint").textContent = prejoin ? "Type the name you join Meet with. The host will see it in the attendance list." : "Type your name exactly as it appears in the meeting so the host can see it.";
+    const input = shadow.querySelector("input");
+    if (prejoin) input.value = manualSelfName || detectSelfName() || cachedSelfName || "";
+    for (const type of ["keydown", "keyup", "keypress"]) input.addEventListener(type, (event) => event.stopPropagation());
+    shadow.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!saveManualName(input.value)) input.focus();
+    });
+    (document.body || document.documentElement).appendChild(namePromptHost);
+  }
+  function findMyName() {
+    return manualSelfName || detectSelfName() || cachedSelfName || cleanSelfName(auth.currentUser?.displayName) || null;
   }
   function removeTrackingNotice() {
     privacyNoticeHost?.remove();
@@ -29635,10 +29755,12 @@ This typically indicates that your device does not have a healthy Internet conne
         durationLoadedRunId = null;
         durationLoadPromise = null;
         activeDurationMs = 0;
+        timeline = [];
         awayDurationMs = 0;
         durationStatus = null;
         durationLastReportedAt = null;
         lastStatus = null;
+        lastReportedName = null;
         lastHeartbeatAt = 0;
       }
       renderTrackingNotice();
@@ -29671,8 +29793,30 @@ This typically indicates that your device does not have a healthy Internet conne
       scheduleStatusReport(refreshRequested || lastStatus === null);
     }, (error) => reportExtensionError("participant-session", error, "session"));
   }
+  var panelFocusUntil = 0;
+  var panelFocusTimer = null;
+  function panelHasFocus() {
+    return Date.now() < panelFocusUntil;
+  }
+  function setPanelFocus(focused) {
+    const before = panelHasFocus();
+    if (panelFocusTimer !== null) {
+      clearTimeout(panelFocusTimer);
+      panelFocusTimer = null;
+    }
+    if (focused) {
+      panelFocusUntil = Date.now() + 4e3;
+      panelFocusTimer = setTimeout(() => {
+        panelFocusTimer = null;
+        scheduleStatusReport(true);
+      }, 4100);
+    } else {
+      panelFocusUntil = 0;
+    }
+    if (before !== panelHasFocus()) scheduleStatusReport(true);
+  }
   function getCurrentStatus() {
-    return !document.hidden && document.hasFocus() ? "active" : "away";
+    return !document.hidden && (document.hasFocus() || panelHasFocus()) ? "active" : "away";
   }
   function scheduleStatusReport(forceHeartbeat = false) {
     if (!meetingActive) return;
@@ -29695,6 +29839,15 @@ This typically indicates that your device does not have a healthy Internet conne
   function timestampMillis(value) {
     return typeof value?.toMillis === "function" ? value.toMillis() : value instanceof Date ? value.getTime() : Number.NaN;
   }
+  function isTimelineEntry(entry) {
+    return Boolean(entry) && ["active", "away", "left"].includes(entry.s) && Number.isFinite(entry.t);
+  }
+  function appendTimelineEntry(entries, status, at2) {
+    if (!["active", "away", "left"].includes(status)) return entries;
+    if (entries[entries.length - 1]?.s === status) return entries;
+    const next = [...entries, { s: status, t: at2 }];
+    return next.length > TIMELINE_MAX_ENTRIES ? next.slice(next.length - TIMELINE_MAX_ENTRIES) : next;
+  }
   async function ensureDurationState(now) {
     const runId = currentRunId;
     if (!runId || durationLoadedRunId === runId) return;
@@ -29707,6 +29860,7 @@ This typically indicates that your device does not have a healthy Internet conne
           if (previous.runId === runId) {
             activeDurationMs = Number(previous.activeDurationMs) || 0;
             awayDurationMs = Number(previous.awayDurationMs) || 0;
+            timeline = Array.isArray(previous.timeline) ? previous.timeline.filter(isTimelineEntry).slice(-TIMELINE_MAX_ENTRIES) : [];
             const lastSeenMs = timestampMillis(previous.lastSeen);
             const resumedAtMs = timestampMillis(session?.resumedAt) || timestampMillis(session?.startedAt);
             const since = Math.max(lastSeenMs || now, resumedAtMs || 0, now - DURATION_STALE_AFTER_MS);
@@ -29739,12 +29893,13 @@ This typically indicates that your device does not have a healthy Internet conne
     if (!currentUid || !storedHostUidLoaded || !meetingActive || !session || session.status !== "running" || isHostClient()) return false;
     const name4 = findMyName();
     if (name4) currentName = name4;
+    const nameChanged = Boolean(currentName) && currentName !== lastReportedName;
     const status = statusOverride ?? getCurrentStatus();
     const reportRunId = currentRunId;
     await ensureDurationState(Date.now());
     if (!meetingActive || !session || session.status !== "running" || currentRunId !== reportRunId || isHostClient()) return false;
     const now = Date.now();
-    if (!forceHeartbeat && status === lastStatus && now - lastHeartbeatAt < 3e4) return false;
+    if (!forceHeartbeat && !nameChanged && status === lastStatus && now - lastHeartbeatAt < 3e4) return false;
     let nextActiveDurationMs = activeDurationMs;
     let nextAwayDurationMs = awayDurationMs;
     if (durationStatus && durationLastReportedAt !== null) {
@@ -29752,6 +29907,7 @@ This typically indicates that your device does not have a healthy Internet conne
       if (durationStatus === "active") nextActiveDurationMs += elapsedMs;
       if (durationStatus === "away") nextAwayDurationMs += elapsedMs;
     }
+    const nextTimeline = appendTimelineEntry(timeline, status, now);
     await setDoc(doc(db, "sessions", meetCode, "students", currentUid), {
       uid: currentUid,
       name: currentName || "Meet participant",
@@ -29759,15 +29915,18 @@ This typically indicates that your device does not have a healthy Internet conne
       runId: reportRunId,
       activeDurationMs: nextActiveDurationMs,
       awayDurationMs: nextAwayDurationMs,
+      timeline: nextTimeline,
       lastSeen: serverTimestamp(),
       ...additionalFields
     }, { merge: true });
     activeDurationMs = nextActiveDurationMs;
     awayDurationMs = nextAwayDurationMs;
+    timeline = nextTimeline;
     durationStatus = ["active", "away"].includes(status) ? status : null;
     durationLastReportedAt = durationStatus ? now : null;
     lastStatus = status;
     lastHeartbeatAt = now;
+    if (currentName) lastReportedName = currentName;
     return true;
   }
   function syncMeetingContext() {
@@ -29797,7 +29956,10 @@ This typically indicates that your device does not have a healthy Internet conne
     if (meetingActive && nextCode !== meetCode) {
       void reportStatus(true, "left");
     }
-    if (nextCode !== meetCode) currentName = null;
+    if (nextCode !== meetCode) {
+      currentName = null;
+      nameConfirmedForPage = false;
+    }
     meetCode = nextCode;
     meetingActive = nextMeetingActive;
     listenForSession();
@@ -29806,6 +29968,8 @@ This typically indicates that your device does not have a healthy Internet conne
     if (meetingContextTimer !== null) return;
     meetingContextTimer = setTimeout(() => {
       meetingContextTimer = null;
+      if (rememberSelfName() && meetingActive && session?.status === "running") scheduleStatusReport(true);
+      updateNamePrompt();
       syncMeetingContext();
     }, 500);
   }
@@ -29824,7 +29988,8 @@ This typically indicates that your device does not have a healthy Internet conne
     if (user.displayName) currentName = user.displayName;
     listenForSession();
   });
-  chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun"], ({ hostUid, privacyNoticeDismissedRun: dismissedRun }) => {
+  chrome.storage.local.get(["hostUid", "privacyNoticeDismissedRun", "selfDisplayName"], ({ hostUid, privacyNoticeDismissedRun: dismissedRun, selfDisplayName }) => {
+    if (!manualSelfName && cleanSelfName(selfDisplayName)) manualSelfName = cleanSelfName(selfDisplayName);
     storedHostUid = hostUid ?? null;
     storedHostUidLoaded = true;
     privacyNoticeDismissedRun = dismissedRun ?? null;
@@ -29835,6 +30000,15 @@ This typically indicates that your device does not have a healthy Internet conne
   });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
+    if (changes.selfDisplayName) {
+      const name4 = cleanSelfName(changes.selfDisplayName.newValue);
+      if (name4 && name4 !== manualSelfName) {
+        manualSelfName = name4;
+        nameConfirmedForPage = true;
+        updateNamePrompt();
+        if (meetingActive) scheduleStatusReport(true);
+      }
+    }
     if (changes.hostUid) {
       storedHostUid = changes.hostUid.newValue ?? null;
       storedHostUidLoaded = true;
@@ -29864,6 +30038,7 @@ This typically indicates that your device does not have a healthy Internet conne
       durationLoadedRunId = null;
       durationLoadPromise = null;
       activeDurationMs = 0;
+      timeline = [];
       awayDurationMs = 0;
       durationStatus = null;
       durationLastReportedAt = null;
@@ -29906,6 +30081,17 @@ This typically indicates that your device does not have a healthy Internet conne
       sendResponse({ meetCode: readMeetCode(), inMeeting, hostControlsVisible: inMeeting && hasMeetHostControls(), participantNames: inMeeting && hasMeetHostControls() ? getParticipantRoster() : [] });
       return;
     }
+    if (message?.type === "in-session:get-status") {
+      setPanelFocus(Boolean(message.panelFocused));
+      const inMeeting = isInMeeting();
+      sendResponse({
+        inMeeting,
+        meetCode: readMeetCode(),
+        status: inMeeting ? getCurrentStatus() : "none",
+        tracking: Boolean(inMeeting && session?.status === "running" && !isHostClient())
+      });
+      return;
+    }
     if (message?.type !== "in-session:retry") return;
     if (message.action === "status") {
       void reportStatus(true).then((ok) => sendResponse({ ok, message: ok ? "" : "Attendance is not currently being tracked." }));
@@ -29931,23 +30117,38 @@ This typically indicates that your device does not have a healthy Internet conne
   meetCode = readMeetCode();
   meetingActive = Boolean(meetCode && isInMeeting());
   var routeObserver = new MutationObserver(() => {
+    if (shutDownIfStale()) return;
     scheduleMeetingContextCheck();
     scheduleRosterUpdate();
   });
   routeObserver.observe(document.documentElement, { childList: true, subtree: true });
-  setInterval(scheduleMeetingContextCheck, MEET_STATE_POLL_MS);
-  document.addEventListener("visibilitychange", () => scheduleStatusReport(true));
-  window.addEventListener("focus", () => scheduleStatusReport(true));
-  window.addEventListener("blur", () => scheduleStatusReport(true));
+  var statePollTimer = setInterval(() => {
+    if (!shutDownIfStale()) scheduleMeetingContextCheck();
+  }, MEET_STATE_POLL_MS);
+  document.addEventListener("visibilitychange", () => {
+    if (!shutDownIfStale()) scheduleStatusReport(true);
+  });
+  window.addEventListener("focus", () => {
+    if (!shutDownIfStale()) scheduleStatusReport(true);
+  });
+  window.addEventListener("blur", () => {
+    if (!shutDownIfStale()) scheduleStatusReport(true);
+  });
   window.addEventListener("pagehide", () => {
+    if (shutDownIfStale()) return;
     if (awayTimer !== null) clearTimeout(awayTimer);
     awayTimer = null;
-    chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending: false }, () => {
-      void chrome.runtime.lastError;
-    });
+    try {
+      chrome.runtime.sendMessage({ type: "in-session:check-in-state", meetCode, pending: false }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch {
+    }
     void reportStatus(true, "left");
   });
-  window.addEventListener("pageshow", () => scheduleStatusReport(true));
+  window.addEventListener("pageshow", () => {
+    if (!shutDownIfStale()) scheduleStatusReport(true);
+  });
   console.info("[InSession] Authenticated tracker ready.");
 })();
 /*! Bundled license information:

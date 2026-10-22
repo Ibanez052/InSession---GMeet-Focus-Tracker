@@ -19,6 +19,7 @@ await Promise.all([
   writeFile("dist/manifest.json", `${JSON.stringify(distributionManifest, null, 2)}\n`),
   cp("src/popup/popup.html", "dist/src/popup/popup.html"),
   cp("src/popup/style.css", "dist/src/popup/style.css"),
+  cp("src/popup/theme.js", "dist/src/popup/theme.js"),
   cp("src/background/service-worker.js", "dist/src/background/service-worker.js"),
   cp("src/auth/offscreen.html", "dist/src/auth/offscreen.html"),
   cp("src/auth/offscreen.js", "dist/src/auth/offscreen.js"),
