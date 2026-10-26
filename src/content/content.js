@@ -292,7 +292,7 @@ function clearExtensionError(source) {
 
 function readMeetCode() {
   if (location.hostname !== "meet.google.com") return null;
-  return location.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/i)?.[1] ?? null;
+  return location.pathname.match(/^\/(?:meet\/)?([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/i)?.[1] ?? null;
 }
 
 function isInMeeting() {

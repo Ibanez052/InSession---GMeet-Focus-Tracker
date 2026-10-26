@@ -29647,7 +29647,7 @@ function getMeetCode(url) {
   try {
     const parsed = new URL(url);
     if (parsed.hostname !== "meet.google.com") return null;
-    return parsed.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/i)?.[1] ?? null;
+    return parsed.pathname.match(/^\/(?:meet\/)?([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/|$)/i)?.[1] ?? null;
   } catch {
     return null;
   }
